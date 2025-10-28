@@ -1,6 +1,6 @@
 # NCR 53C710 DMA Test Tool for Amiga 4000T
 
-[![Build NCR DMA Test Tool](https://github.com/USERNAME/REPO/actions/workflows/build.yml/badge.svg)](https://github.com/USERNAME/REPO/actions/workflows/build.yml)
+[![Build NCR DMA Test Tool](https://github.com/terriblefire/ncrtest/actions/workflows/build.yml/badge.svg)](https://github.com/terriblefire/ncrtest/actions/workflows/build.yml)
 
 **Version:** ncrtest 0.01 (28.10.2025)
 
