@@ -135,15 +135,6 @@ The chip is configured to:
 - NCR 53C710 chip: 0x00DD0040
 - Write offset for longwords: +0x80 bytes
 
-## Safety
-
-This tool is safe to run because:
-- SCSI interrupts are disabled
-- SCSI control registers are set to 0
-- No SCSI bus arbitration or selection occurs
-- Only internal DMA engine is used
-- No commands are sent to SCSI devices
-
 ## Output
 
 All output goes to the console via standard printf. Run the tool from CLI or Shell to see the test results, or redirect output to a file.
