@@ -148,10 +148,6 @@ This tool is safe to run because:
 
 All output goes to the console via standard printf. Run the tool from CLI or Shell to see the test results, or redirect output to a file.
 
-## Reference Code
-
-This tool is based on the NCR driver code from /Users/stephen/git/kickstart/scsidisk which provides the reference implementation of the NCR 53C710 driver for Amiga SCSI disk operations.
-
 ## License
 
 This is a diagnostic tool for Amiga 4000T hardware testing.
