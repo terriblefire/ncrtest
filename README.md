@@ -1,5 +1,7 @@
 # NCR 53C710 DMA Test Tool for Amiga 4000T
 
+[![Build NCR DMA Test Tool](https://github.com/USERNAME/REPO/actions/workflows/build.yml/badge.svg)](https://github.com/USERNAME/REPO/actions/workflows/build.yml)
+
 **Version:** ncrtest 0.01 (28.10.2025)
 
 A standard Amiga executable that tests DMA paths between different memory areas using the NCR 53C710 SCSI chip on the Amiga 4000T. This tool does **not** access the SCSI bus or any physical disks - it only uses the chip's internal DMA engine for memory-to-memory transfers.
