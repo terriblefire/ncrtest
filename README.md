@@ -2,7 +2,7 @@
 
 [![Build NCR DMA Test Tool](https://github.com/terriblefire/ncrtest/actions/workflows/build.yml/badge.svg)](https://github.com/terriblefire/ncrtest/actions/workflows/build.yml)
 
-**Version:** ncrtest 0.01 (28.10.2025)
+**Version:** ncrtest 0.01 (build date generated automatically)
 
 A standard Amiga executable that tests DMA paths between different memory areas using the NCR 53C710 SCSI chip on the Amiga 4000T. This tool does **not** access the SCSI bus or any physical disks - it only uses the chip's internal DMA engine for memory-to-memory transfers.
 
@@ -33,19 +33,19 @@ Requirements:
 - m68k-amigaos-gcc cross-compiler (68040 target)
 - Amiga NDK includes
 
-Build the executable:
+Build both the executable and ROM module:
 ```bash
+export VBCC=/opt/vbcc
 make
 ```
 
-This produces `ncr_dmatest` - a standard Amiga executable.
+This produces:
+- `ncr_dmatest` (13KB) - Standard Amiga executable (gcc)
+- `ncr_dmatest.resource` (14KB) - ROM-resident module (vbcc + gcc)
 
-Build patched kickstart ROM (optional):
-```bash
-make kickstart
-```
+**Note:** The ROM module requires vbcc installed at `/opt/vbcc`. If you only have gcc, just build the standard executable with `make ncr_dmatest`.
 
-This creates `roms/kickstart_patched.rom` with the test tool integrated as a ROM module.
+See [ROM_MODULE.md](ROM_MODULE.md) for details on adding the ROM module to your kickstart.
 
 Clean build artifacts:
 ```bash
@@ -56,6 +56,27 @@ Deep clean (including ROM splits and venv):
 ```bash
 make distclean
 ```
+
+## Installation and Usage
+
+### Running Manually
+
+Copy `ncr_dmatest` to your Amiga and run from CLI or Shell:
+```
+ncr_dmatest
+```
+
+### Making the Command Resident
+
+To make the command available at boot time without loading from disk, add this to your `S:User-Startup`:
+
+```
+Resident ncr_dmatest C:ncr_dmatest PURE
+```
+
+This keeps the command in memory (approximately 10-13KB) and makes it available from any directory.
+
+See [RESIDENT.md](RESIDENT.md) for detailed instructions on making the command resident at boot time.
 
 ## Architecture
 

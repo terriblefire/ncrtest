@@ -11,8 +11,11 @@
 #include <exec/resident.h>
 #include <exec/memory.h>
 
-/* Version information */
-#define VERSION_STRING "ncrtest 0.01 (28.10.2025)"
+/* Version information - BUILD_DATE is set by Makefile */
+#ifndef BUILD_DATE
+#define BUILD_DATE "unknown"
+#endif
+#define VERSION_STRING "ncrtest 0.01 (" BUILD_DATE ")"
 
 /* NCR 53C710 register structure for big-endian access */
 struct ncr710 {

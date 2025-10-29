@@ -21,12 +21,14 @@ jobs:
           -v ${PWD}:/work \
           -w /work \
           amigadev/crosstools:m68k-amigaos \
-          make clean all
+          bash -c "make clean && make ncr_dmatest"
 
     - name: Display build info
       run: |
         ls -lh ncr_dmatest
         file ncr_dmatest
+        echo "Version string:"
+        strings ncr_dmatest | grep ncrtest
         docker run --rm \
           -v ${PWD}:/work \
           -w /work \
@@ -53,6 +55,12 @@ jobs:
           **Built with:** m68k-amigaos-gcc 6.5.0b
 
           This is a standard Amiga executable that tests the NCR 53C710 SCSI chip's DMA engine.
+
+          ## Files in this Release
+          - `ncr_dmatest` - Standard Amiga executable (built with gcc)
+
+          **Note:** The ROM module (`ncr_dmatest.resource`) requires vbcc and must be built locally.
+          See [ROM_MODULE.md](https://github.com/terriblefire/ncrtest/blob/main/ROM_MODULE.md) for instructions.
 
           ## Usage
           Copy `ncr_dmatest` to your Amiga 4000T and run from CLI/Shell.
