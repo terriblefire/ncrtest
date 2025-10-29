@@ -62,9 +62,6 @@ $(TARGET): $(C_OBJS)
 	@echo "Executable built: $(TARGET)"
 	@m68k-amigaos-size $(TARGET)
 
-# Alias for building just the executable
-ncr_dmatest: $(TARGET)
-
 # Link the ROM module (vbcc)
 $(ROM_TARGET): $(TARGET) $(ROM_OBJS)
 	$(LD) $(LDFLAGS_ROM) $(ROM_OBJS) -o $@
@@ -97,8 +94,68 @@ clean:
 	rm -f $(C_OBJS) $(ROM_OBJS) $(TARGET) $(ROM_TARGET) *.rom *.asm
 	@echo "Clean complete"
 
+# ROM building
+ROM_DIR = roms
+KICKSTART_ROM = $(ROM_DIR)/kick4000.rom
+KICKSTART_OUT = $(ROM_DIR)/kickstart_patched.rom
+ROM_SPLIT_DIR = $(ROM_DIR)/split
+VENV_DIR = venv
+ROMTOOL = $(VENV_DIR)/bin/romtool
+
+# Setup Python virtual environment and install amitools
+$(VENV_DIR)/bin/activate:
+	@echo "Creating Python virtual environment..."
+	python3 -m venv $(VENV_DIR)
+	@echo "Installing amitools..."
+	$(VENV_DIR)/bin/pip install --upgrade pip
+	$(VENV_DIR)/bin/pip install amitools
+
+# Split the kickstart ROM
+$(ROM_SPLIT_DIR)/index.txt: $(KICKSTART_ROM) $(VENV_DIR)/bin/activate
+	@echo "Splitting kickstart ROM..."
+	@mkdir -p $(ROM_SPLIT_DIR)
+	$(ROMTOOL) split -o $(ROM_SPLIT_DIR) --no-version-dir $(KICKSTART_ROM)
+	@echo "ROM split complete"
+
+# Build patched kickstart with our ROM module
+kickstart: $(ROM_TARGET) $(ROM_SPLIT_DIR)/index.txt
+	@echo "Building patched kickstart ROM..."
+	@# Remove modules to make space for our module
+	@echo "Removing modules to make space..."
+	@grep -v -e "potgo.resource" \
+	         -e "audio.device" \
+	         -e "wbtask" \
+	         -e "ramdrive" \
+	         -e "shell_" \
+	         -e "bootmenu" \
+	         -e "romboot" \
+	         $(ROM_SPLIT_DIR)/index.txt > $(ROM_SPLIT_DIR)/index_patched.txt || true
+	@echo "Removed: potgo, audio, wbtask, ramdrive, shell, bootmenu, romboot"
+	@# Add our ROM module to the index
+	@echo "$(ROM_TARGET)" >> $(ROM_SPLIT_DIR)/index_patched.txt
+	@# Copy our module to the split directory
+	@cp $(ROM_TARGET) $(ROM_SPLIT_DIR)/
+	@# Build the new ROM
+	$(ROMTOOL) build -o $(KICKSTART_OUT) $(ROM_SPLIT_DIR)/index_patched.txt
+	@echo "Patched kickstart created: $(KICKSTART_OUT)"
+	@ls -lh $(KICKSTART_OUT)
+	@echo ""
+	@echo "Verifying ROM contents..."
+	@$(ROMTOOL) scan $(KICKSTART_OUT) | grep -i ncr_dmatest || echo "ERROR: Module not found in ROM!"
+	@echo "✓ Verification complete"
+
+# Verify the patched kickstart
+verify-kickstart: $(KICKSTART_OUT)
+	@echo "Scanning patched ROM..."
+	@$(ROMTOOL) scan $(KICKSTART_OUT)
+	@echo ""
+	@echo "Our module:"
+	@$(ROMTOOL) scan $(KICKSTART_OUT) | grep -i ncr_dmatest
+
 # Clean everything including ROM splits and venv
 distclean: clean
+	rm -rf $(ROM_SPLIT_DIR) $(KICKSTART_OUT)
+	rm -rf $(VENV_DIR)
 	@echo "Deep clean complete"
 
 # Rebuild everything
@@ -117,4 +174,4 @@ show:
 	@echo "OBJS     = $(OBJS)"
 	@echo "TARGET   = $(TARGET)"
 
-.PHONY: all clean rebuild show distclean
+.PHONY: all clean rebuild show distclean kickstart verify-kickstart
