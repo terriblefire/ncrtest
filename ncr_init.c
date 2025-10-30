@@ -162,7 +162,7 @@ LONG InitNCR(volatile struct ncr710 *ncr)
 	(void)ncr->sstat2;
 
 	// Configure DMA mode
-	// BL1|BL0 = burst length (11 = 8 transfers)
+	// BL1|BL0 = burst length (11 = 8 transfers, matching ROM)
 	// FC2 = function code
 	printf("  Configuring DMA mode...\n");
 	ncr->dmode = DMODEF_BL1 | DMODEF_BL0 | DMODEF_FC2;

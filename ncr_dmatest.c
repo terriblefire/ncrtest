@@ -49,8 +49,7 @@ static UBYTE *AllocInRange(ULONG start, ULONG end, ULONG size, const char *regio
 {
 	UBYTE *mem;
 	ULONG addr;
-	start += 16;
-
+	
 	printf("  Searching for %ld bytes in %s region (0x%08lx-0x%08lx)...\n",
 	       size, region_name, start, end);
 
@@ -234,6 +233,9 @@ LONG RunDMATest(volatile struct ncr710 *ncr, UBYTE *src, UBYTE *dst, ULONG size)
 
 	// Build the SCRIPTS program
 	script = BuildDMAScript(src, dst, size);
+
+	// Flush caches before DMA to ensure data/script visibility
+	CacheClearU();
 
 	// Clear any pending interrupts
 	(void)ncr->istat;
