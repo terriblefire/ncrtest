@@ -1,0 +1,30 @@
+# Amiga build artifacts
+*.o
+*.asm
+*.resource
+*.i
+
+# Executables
+ncr_dmatest
+
+# ROM files
+*.rom
+roms/split/
+roms/kickstart_patched.rom
+
+# Python virtual environment (for amitools)
+venv/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-*
+*~
+.DS_Store
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Output files
+output.txt
