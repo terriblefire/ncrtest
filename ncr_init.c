@@ -6,6 +6,24 @@
 #include <stdio.h>
 #include <exec/execbase.h>
 #include <proto/exec.h>
+#include <proto/dos.h>
+#include <hardware/cia.h>
+
+/*
+ * CIA-based delay function (from ROM code)
+ * Delays for approximately the specified number of microseconds
+ */
+static void poll_cia(ULONG microseconds)
+{
+	struct CIA *ciaa = (struct CIA *)0xBFE001;
+	volatile UBYTE dummy;
+
+	for (ULONG i = 0; i < microseconds; i++) {
+		dummy = ciaa->ciatodlow;
+		(void)dummy;
+	}
+}
+
 
 /*
  * Check if NCR 53C710 chip is present
@@ -76,11 +94,12 @@ LONG DetectNCR(volatile struct ncr710 *ncr)
 
 /*
  * Reset the NCR 53C710 chip
+ * Based on init_chip() from kickstart/scsidisk/ncr.c
  */
 LONG ResetNCR(volatile struct ncr710 *ncr)
 {
-	ULONG timeout;
 	UBYTE istat;
+	ULONG status;
 
 	printf("Resetting NCR 53C710...\n");
 
@@ -88,35 +107,28 @@ LONG ResetNCR(volatile struct ncr710 *ncr)
 	istat = ncr->istat;
 	printf("  ISTAT before reset: 0x%02lx\n", (ULONG)istat);
 
+	// Abort any running scripts first (like ROM does)
+	printf("  Aborting any running scripts...\n");
+	ncr->istat |= ISTATF_ABRT;
+	poll_cia(50000);  // 50ms delay
+
 	// Software reset via ISTAT register
-	ncr->istat = ISTATF_RST;
+	printf("  Asserting software reset...\n");
+	ncr->istat |= ISTATF_RST;
 
-	// Wait for reset to complete (should be quick)
-	for (timeout = 0; timeout < 10000; timeout++) {
-		istat = ncr->istat;
-		if ((istat & ISTATF_RST) == 0)
-			break;
-	}
+	// Clear ISTAT to 0 (like ROM does)
+	ncr->istat = 0;
+	poll_cia(100000);  // 100ms delay
 
-	if (timeout >= 10000) {
-		printf("ERROR: NCR reset timeout (ISTAT=0x%02lx after %ld iterations)\n",
-		       (ULONG)istat, timeout);
-		printf("  Attempting to continue anyway...\n");
-		// Don't fail - some emulators may not properly emulate reset
-		// return -1;
-	} else {
-		printf("  Reset cleared after %ld iterations\n", timeout);
-	}
+	printf("  NCR chip reset complete\n");
 
-	// Small delay after reset
-	for (timeout = 0; timeout < 1000; timeout++) {
-		// Just delay
-	}
-
-	// Clear the reset bit explicitly if still set
-	if (ncr->istat & ISTATF_RST) {
-		printf("  Clearing stuck RST bit\n");
-		ncr->istat = 0x00;
+	// Clear any pending interrupts from reset/abort
+	printf("  Clearing pending interrupts...\n");
+	while ((istat = ncr->istat & (ISTATF_SIP|ISTATF_DIP)) != 0) {
+		poll_cia(50000);
+		// Read status registers to clear interrupts
+		status = *((volatile ULONG *) &(ncr->sstat2));
+		(void)status;
 	}
 
 	printf("NCR reset complete (ISTAT=0x%02lx)\n", (ULONG)ncr->istat);
@@ -125,6 +137,7 @@ LONG ResetNCR(volatile struct ncr710 *ncr)
 
 /*
  * Initialize the NCR 53C710 for DMA testing
+ * Based on init_chip() from kickstart/scsidisk/ncr.c
  * This sets up the chip but does NOT enable SCSI bus operations
  */
 LONG InitNCR(volatile struct ncr710 *ncr)
@@ -139,7 +152,17 @@ LONG InitNCR(volatile struct ncr710 *ncr)
 	if (ResetNCR(ncr) < 0)
 		return -1;
 
+	// Disable burst bus mode (like ROM does)
+	printf("  Disabling burst bus mode...\n");
+	ncr->ctest7 |= 0x80;
+
+	// Configure CTEST0: disable byte-to-byte timer, enable active negation
+	// (ROM uses CTEST0F_BTD | CTEST0F_EAN for non-fast SCSI)
+	printf("  Configuring CTEST0...\n");
+	ncr->ctest0 = CTEST0F_BTD | CTEST0F_EAN | CTEST0F_ERF;
+
 	// Disable all SCSI interrupts - we don't want to trigger any SCSI bus activity
+	printf("  Disabling SCSI interrupts...\n");
 	ncr->sien = 0;
 
 	// Clear any pending SCSI status
@@ -147,31 +170,43 @@ LONG InitNCR(volatile struct ncr710 *ncr)
 	(void)ncr->sstat1;
 	(void)ncr->sstat2;
 
-	// Configure DMA mode
+	// Configure DMA mode (from ROM)
 	// BL1|BL0 = burst length (11 = 8 transfers)
-	// FC1 = function code (supervisor data)
-	// FAM = fixed address mode off
-	// MAN = manual start off
-	ncr->dmode = DMODEF_BL1 | DMODEF_BL0 | DMODEF_FC1;
+	// FC2 = function code (like ROM uses)
+	printf("  Configuring DMA mode...\n");
+	ncr->dmode = DMODEF_BL1 | DMODEF_BL0 | DMODEF_FC2;
 
-	// Enable DMA interrupts we care about
-	// We want to know about illegal instructions, aborts, and single-step
-	ncr->dien = DIENF_IID | DIENF_ABRT | DIENF_SSI;
+	// Configure DMA control (from ROM for A4000T)
+	// EA = Enable Ack (critical for A4000T)
+	// COM = Compatibility mode
+	printf("  Configuring DMA control...\n");
+	ncr->dcntl = DCNTLF_EA | DCNTLF_COM;
 
-	// Clear any pending DMA status
-	(void)ncr->dstat;
+	// Enable DMA interrupts (from ROM)
+	printf("  Enabling DMA interrupts...\n");
+	ncr->dien = DIENF_BF | DIENF_ABRT | DIENF_SIR | DIENF_IID | DIENF_SSI;
 
-	// Configure DMA control
-	// CF1|CF0 = clock divide (00 = divide by 1, 50MHz)
-	// EA = Enable Ack
-	// Note: We do NOT set COM (compatibility mode) - use full '710 features
-	ncr->dcntl = DCNTLF_EA;
+	// Wait a bit to let any interrupts from enable settle
+	poll_cia(1000);
 
 	// Clear scratch registers
 	WRITE_LONG(ncr, scratch, 0);
 	WRITE_LONG(ncr, temp, 0);
 
+	// Perform SCSI bus reset to clear any devices in bad state
+	// Must wait 25us before de-asserting RST (SCSI spec)
+	printf("  Performing SCSI bus reset...\n");
+	ncr->scntl1 = SCNTL1F_RST;
+	poll_cia(25);  // 25us delay
+	ncr->scntl1 &= ~SCNTL1F_RST;
+
+	// Must wait 250ms before trying to use the bus (SCSI spec)
+	printf("  Waiting for bus to settle...\n");
+	poll_cia(250000);  // 250ms delay
+
 	// Disable SCSI chip ID and control - we're not doing SCSI operations
+	// (We're NOT doing selection/reselection like the ROM does)
+	printf("  Disabling SCSI bus operations...\n");
 	ncr->scid = 0;
 	ncr->scntl0 = 0;
 	ncr->scntl1 = 0;
@@ -180,9 +215,11 @@ LONG InitNCR(volatile struct ncr710 *ncr)
 	ncr->sxfer = 0;
 
 	printf("NCR initialization complete\n");
-	printf("  DMODE: 0x%02lx\n", (ULONG)ncr->dmode);
-	printf("  DCNTL: 0x%02lx\n", (ULONG)ncr->dcntl);
-	printf("  DIEN:  0x%02lx\n", (ULONG)ncr->dien);
+	printf("  CTEST7: 0x%02lx\n", (ULONG)ncr->ctest7);
+	printf("  CTEST0: 0x%02lx\n", (ULONG)ncr->ctest0);
+	printf("  DMODE:  0x%02lx\n", (ULONG)ncr->dmode);
+	printf("  DCNTL:  0x%02lx\n", (ULONG)ncr->dcntl);
+	printf("  DIEN:   0x%02lx\n", (ULONG)ncr->dien);
 
 	return 0;
 }
