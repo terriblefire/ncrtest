@@ -17,13 +17,13 @@ LD = $(VBCC)/bin/vlink
 BUILD_DATE := $(shell date +%d.%m.%Y)
 
 # Compiler flags for standard executable (gcc)
-CFLAGS = -O2 -m68040 -noixemul -fomit-frame-pointer
+CFLAGS = -Os -m68040 -noixemul -fomit-frame-pointer -fmerge-all-constants
 CFLAGS += -Wall -Wno-pointer-sign
 CFLAGS += -DNCR53C710=1 -DIS_A4000T=1
 CFLAGS += -DBUILD_DATE=\"$(BUILD_DATE)\"
 
 # Compiler flags for ROM module (vbcc)
-CFLAGS_ROM = -v -O2 -size -cpu=68040 -fastcall -nostdlib -c99 -k -sc +aos68k
+CFLAGS_ROM = -v -O2 -size -cpu=68040 -fastcall -nostdlib -c99 -k -sc +aos68k 
 CFLAGS_ROM += -I$(VBCC)/targets/m68k-amigaos/include -I$(VBCC)/NDK_3.9/Include/include_h
 CFLAGS_ROM += -DBUILD_DATE=$(BUILD_DATE)
 

@@ -17,12 +17,55 @@ extern LONG CheckNCRStatus(volatile struct ncr710 *ncr, const char *context);
 /* Global buffers for cleanup on CTRL-C */
 static UBYTE *g_chip_buf1 = NULL;
 static UBYTE *g_chip_buf2 = NULL;
-static UBYTE *g_fast_buf1 = NULL;
-static UBYTE *g_fast_buf2 = NULL;
+static UBYTE *g_mbfast_buf1 = NULL;
+static UBYTE *g_mbfast_buf2 = NULL;
+static UBYTE *g_cpufastl_buf1 = NULL;
+static UBYTE *g_cpufastl_buf2 = NULL;
+static UBYTE *g_cpufastu_buf1 = NULL;
+static UBYTE *g_cpufastu_buf2 = NULL;
 static BOOL g_cleanup_done = FALSE;
+
+/* SCRIPTS buffer - allocated in FAST memory */
+static UBYTE *g_scripts_buf = NULL;
+
+/* Memory region definitions */
+#define MB_FAST_START    0x07000000UL
+#define MB_FAST_END      0x07FFFFFFUL
+#define CPU_FASTL_START  0x08000000UL
+#define CPU_FASTL_END    0x0FFFFFFFUL
+#define CPU_FASTU_START  0x10000000UL
+#define CPU_FASTU_END    0x18000000UL
+#define ALLOC_STEP       (64*1024)  // 64KB increment
 
 /* Simple pseudo-random number generator for test patterns */
 static ULONG random_seed = 0x12345678;
+
+/*
+ * Allocate memory in a specific address range using AllocAbs()
+ * Searches the range in 64KB increments until successful
+ * Returns NULL if no memory available in range
+ */
+static UBYTE *AllocInRange(ULONG start, ULONG end, ULONG size, const char *region_name)
+{
+	UBYTE *mem;
+	ULONG addr;
+	start += 16;
+
+	printf("  Searching for %ld bytes in %s region (0x%08lx-0x%08lx)...\n",
+	       size, region_name, start, end);
+
+	// Search the range in ALLOC_STEP increments
+	for (addr = start; addr <= (end - size); addr += ALLOC_STEP) {
+		mem = (UBYTE *)AllocAbs(size, (APTR)addr);
+		if (mem) {
+			printf("    Allocated at 0x%08lx\n", (ULONG)mem);
+			return mem;
+		}
+	}
+
+	printf("    Failed to allocate in %s region\n", region_name);
+	return NULL;
+}
 
 /*
  * Cleanup function for CTRL-C or normal exit
@@ -42,13 +85,33 @@ static void CleanupBuffers(void)
 		FreeMem(g_chip_buf2, TEST_BUFFER_SIZE);
 		g_chip_buf2 = NULL;
 	}
-	if (g_fast_buf1) {
-		FreeMem(g_fast_buf1, TEST_BUFFER_SIZE);
-		g_fast_buf1 = NULL;
+	if (g_mbfast_buf1) {
+		FreeMem(g_mbfast_buf1, TEST_BUFFER_SIZE);
+		g_mbfast_buf1 = NULL;
 	}
-	if (g_fast_buf2) {
-		FreeMem(g_fast_buf2, TEST_BUFFER_SIZE);
-		g_fast_buf2 = NULL;
+	if (g_mbfast_buf2) {
+		FreeMem(g_mbfast_buf2, TEST_BUFFER_SIZE);
+		g_mbfast_buf2 = NULL;
+	}
+	if (g_cpufastl_buf1) {
+		FreeMem(g_cpufastl_buf1, TEST_BUFFER_SIZE);
+		g_cpufastl_buf1 = NULL;
+	}
+	if (g_cpufastl_buf2) {
+		FreeMem(g_cpufastl_buf2, TEST_BUFFER_SIZE);
+		g_cpufastl_buf2 = NULL;
+	}
+	if (g_cpufastu_buf1) {
+		FreeMem(g_cpufastu_buf1, TEST_BUFFER_SIZE);
+		g_cpufastu_buf1 = NULL;
+	}
+	if (g_cpufastu_buf2) {
+		FreeMem(g_cpufastu_buf2, TEST_BUFFER_SIZE);
+		g_cpufastu_buf2 = NULL;
+	}
+	if (g_scripts_buf) {
+		FreeMem(g_scripts_buf, 256);  // Small buffer for SCRIPTS
+		g_scripts_buf = NULL;
 	}
 
 	g_cleanup_done = TRUE;
@@ -99,6 +162,8 @@ void FillPattern(UBYTE *buffer, ULONG size, ULONG pattern_type)
 		}
 		break;
 	}
+
+	CacheClearU();
 }
 
 /*
@@ -107,6 +172,8 @@ void FillPattern(UBYTE *buffer, ULONG size, ULONG pattern_type)
 LONG VerifyBuffer(UBYTE *src, UBYTE *dst, ULONG size, struct TestResult *result)
 {
 	ULONG i;
+
+	CacheClearU();
 
 	for (i = 0; i < size; i++) {
 		if (src[i] != dst[i]) {
@@ -123,30 +190,36 @@ LONG VerifyBuffer(UBYTE *src, UBYTE *dst, ULONG size, struct TestResult *result)
 /*
  * Build a simple SCRIPTS program to perform memory-to-memory DMA
  * Returns the address of the script
+ * NOTE: Uses pre-allocated FAST memory buffer (g_scripts_buf)
  */
 static ULONG* BuildDMAScript(UBYTE *src, UBYTE *dst, ULONG size)
 {
-	static struct {
+	struct {
 		struct memmove_inst move;
 		struct jump_inst    done;
-	} script;
+	} *script = (void *)g_scripts_buf;
+
+	if (!g_scripts_buf) {
+		printf("ERROR: SCRIPTS buffer not allocated!\n");
+		return NULL;
+	}
 
 	// Memory-to-memory move instruction
-	script.move.op = 0xC0;  // Memory move opcode
-	script.move.len[0] = (size >> 16) & 0xFF;
-	script.move.len[1] = (size >> 8) & 0xFF;
-	script.move.len[2] = size & 0xFF;
-	script.move.source = (ULONG)src;
-	script.move.dest = (ULONG)dst;
+	script->move.op = 0xC0;  // Memory move opcode
+	script->move.len[0] = (size >> 16) & 0xFF;
+	script->move.len[1] = (size >> 8) & 0xFF;
+	script->move.len[2] = size & 0xFF;
+	script->move.source = (ULONG)src;
+	script->move.dest = (ULONG)dst;
 
 	// INT instruction to signal completion (opcode 0x98, interrupt on the fly)
-	script.done.op = 0x98;
-	script.done.control = 0x08;  // Interrupt always
-	script.done.mask = 0x00;
-	script.done.data = 0x00;
-	script.done.addr = 0xDEADBEEF;  // Value that will be in DSPS
+	script->done.op = 0x98;
+	script->done.control = 0x08;  // Interrupt always
+	script->done.mask = 0x00;
+	script->done.data = 0x00;
+	script->done.addr = 0xDEADBEEF;  // Value that will be in DSPS
 
-	return (ULONG*)&script;
+	return (ULONG*)script;
 }
 
 /*
@@ -307,12 +380,6 @@ LONG RunComprehensiveTest(volatile struct ncr710 *ncr,
 
 	if (failed > 0)
 	{
-		printf("\n=== Some tests failed ===\n");
-		printf("Source buffer: 0x%08lx\n", (ULONG)src_base);
-		printf("Dest buffer:   0x%08lx\n", (ULONG)dst_base);
-		printf("Buffer size:   %ld bytes\n", buffer_size);
-		printf("\n");
-	
 		printf("\n=== Test Summary ===\n");
 		printf("Total tests: %ld\n", test_num);
 		printf("Passed:      %ld\n", passed);
@@ -323,71 +390,132 @@ LONG RunComprehensiveTest(volatile struct ncr710 *ncr,
 }
 
 /*
+ * Test DMA transfer from one buffer to another
+ */
+static void TestDMATransfer(volatile struct ncr710 *ncr,
+                             UBYTE *src_buf, const char *src_name,
+                             UBYTE *dst_buf, const char *dst_name)
+{
+	if (!src_buf || !dst_buf) {
+		printf("*** Skipping: %s -> %s (buffer not available) ***\n",
+		       src_name, dst_name);
+		return;
+	}
+
+	printf("*** Test: %s -> %s ***", src_name, dst_name);
+	if (RunComprehensiveTest(ncr, src_buf, dst_buf, TEST_BUFFER_SIZE) == 0)
+	{
+		printf(" PASSED ***\n");
+	}
+	else
+	{
+		printf(" FAILED ***\n");
+	}
+}
+
+/*
+ * Memory buffer descriptor
+ */
+struct MemoryBuffer {
+	UBYTE **buf;
+	const char *name;
+};
+
+/*
  * Test DMA between different memory types
  */
 void TestMemoryTypes(volatile struct ncr710 *ncr)
 {
+	int src_idx, dst_idx;
+
+	// Define all memory buffers
+	struct MemoryBuffer buffers[] = {
+		{ &g_chip_buf1,     "CHIP"     },
+		{ &g_chip_buf2,     "CHIP"     },
+		{ &g_mbfast_buf1,   "MB_FAST"  },
+		{ &g_mbfast_buf2,   "MB_FAST"  },
+		{ &g_cpufastl_buf1, "CPU_FASTL"},
+		{ &g_cpufastl_buf2, "CPU_FASTL"}
+//		{ &g_cpufastu_buf1, "CPU_FASTU"},
+//		{ &g_cpufastu_buf2, "CPU_FASTU"}
+	};
+	int num_buffers = sizeof(buffers) / sizeof(buffers[0]);
+
 	atexit(CleanupBuffers);
 
 	printf("\n=== NCR 53C710 DMA Memory Test Tool ===\n\n");
 
-	// Allocate chip memory buffers using globals for cleanup
-	// Note: AllocMem returns longword-aligned memory by default
+	// Allocate SCRIPTS buffer in FAST memory
+	printf("Allocating SCRIPTS buffer in FAST memory...\n");
+	g_scripts_buf = AllocMem(256, MEMF_FAST | MEMF_CLEAR);
+	if (!g_scripts_buf) {
+		printf("ERROR: Could not allocate SCRIPTS buffer\n");
+		goto cleanup;
+	}
+	printf("  scripts_buf: 0x%08lx %s\n\n", (ULONG)g_scripts_buf,
+	       ((ULONG)g_scripts_buf & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
+
+	// Allocate chip memory buffers
+	printf("Allocating chip memory buffers...\n");
 	g_chip_buf1 = AllocMem(TEST_BUFFER_SIZE, MEMF_CHIP | MEMF_CLEAR);
 	g_chip_buf2 = AllocMem(TEST_BUFFER_SIZE, MEMF_CHIP | MEMF_CLEAR);
-
-	// Allocate fast memory buffers
-	g_fast_buf1 = AllocMem(TEST_BUFFER_SIZE, MEMF_FAST | MEMF_CLEAR);
-	g_fast_buf2 = AllocMem(TEST_BUFFER_SIZE, MEMF_FAST | MEMF_CLEAR);
-
-	// If we couldn't get FAST, try PUBLIC (any memory)
-	if (!g_fast_buf1)
-		g_fast_buf1 = AllocMem(TEST_BUFFER_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
-	if (!g_fast_buf2)
-		g_fast_buf2 = AllocMem(TEST_BUFFER_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
 
 	if (!g_chip_buf1 || !g_chip_buf2) {
 		printf("ERROR: Could not allocate chip memory buffers\n");
 		goto cleanup;
 	}
 
-	if (!g_fast_buf1 || !g_fast_buf2) {
-		printf("ERROR: Could not allocate fast memory buffers\n");
-		goto cleanup;
-	}
-
-	// Verify buffer alignment (should be longword-aligned)
-	printf("Buffer addresses:\n");
 	printf("  chip_buf1: 0x%08lx %s\n", (ULONG)g_chip_buf1,
 	       ((ULONG)g_chip_buf1 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
-	printf("  chip_buf2: 0x%08lx %s\n", (ULONG)g_chip_buf2,
+	printf("  chip_buf2: 0x%08lx %s\n\n", (ULONG)g_chip_buf2,
 	       ((ULONG)g_chip_buf2 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
-	printf("  fast_buf1: 0x%08lx %s\n", (ULONG)g_fast_buf1,
-	       ((ULONG)g_fast_buf1 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
-	printf("  fast_buf2: 0x%08lx %s\n\n", (ULONG)g_fast_buf2,
-	       ((ULONG)g_fast_buf2 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
 
-	for (int iteration=0; iteration<5000; iteration++)
-	{
-		printf("Iteration %d/5000\n", iteration+1);
-		// Run tests for each memory type combination
+	// Allocate MB_FAST buffers
+	printf("Allocating MB_FAST buffers...\n");
+	g_mbfast_buf1 = AllocInRange(MB_FAST_START, MB_FAST_END, TEST_BUFFER_SIZE+4, "MB_FAST");
+	g_mbfast_buf2 = AllocInRange(MB_FAST_START, MB_FAST_END, TEST_BUFFER_SIZE+4, "MB_FAST"); 
+	if (g_mbfast_buf1 && g_mbfast_buf2) {
+		printf("  mbfast_buf1: 0x%08lx %s\n", (ULONG)g_mbfast_buf1,
+		       ((ULONG)g_mbfast_buf1 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
+		printf("  mbfast_buf2: 0x%08lx %s\n", (ULONG)g_mbfast_buf2,
+		       ((ULONG)g_mbfast_buf2 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
+	}
 
-		// Test 1: CHIP -> CHIP
-		printf("*** Test 1: CHIP MEMORY -> CHIP MEMORY ***\n");
-		RunComprehensiveTest(ncr, g_chip_buf1, g_chip_buf2, TEST_BUFFER_SIZE);
+	// Allocate CPU_FASTL buffers
+	printf("\nAllocating CPU_FASTL buffers...\n");
+	g_cpufastl_buf1 = AllocInRange(CPU_FASTL_START, CPU_FASTL_END, TEST_BUFFER_SIZE, "CPU_FASTL");
+	g_cpufastl_buf2 = AllocInRange(CPU_FASTL_START, CPU_FASTL_END, TEST_BUFFER_SIZE, "CPU_FASTL");
+	if (g_cpufastl_buf1 && g_cpufastl_buf2) {
+		printf("  cpufastl_buf1: 0x%08lx %s\n", (ULONG)g_cpufastl_buf1,
+		       ((ULONG)g_cpufastl_buf1 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
+		printf("  cpufastl_buf2: 0x%08lx %s\n", (ULONG)g_cpufastl_buf2,
+		       ((ULONG)g_cpufastl_buf2 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
+	}
 
-		// Test 2: FAST -> FAST
-		printf("*** Test 2: FAST MEMORY -> FAST MEMORY ***\n");
-		RunComprehensiveTest(ncr, g_fast_buf1, g_fast_buf2, TEST_BUFFER_SIZE);
+	// Allocate CPU_FASTU buffers
+	printf("\nAllocating CPU_FASTU buffers...\n");
+	g_cpufastu_buf1 = AllocInRange(CPU_FASTU_START, CPU_FASTU_END, TEST_BUFFER_SIZE, "CPU_FASTU");
+	g_cpufastu_buf2 = AllocInRange(CPU_FASTU_START, CPU_FASTU_END, TEST_BUFFER_SIZE, "CPU_FASTU");
+	if (g_cpufastu_buf1 && g_cpufastu_buf2) {
+		printf("  cpufastu_buf1: 0x%08lx %s\n", (ULONG)g_cpufastu_buf1,
+		       ((ULONG)g_cpufastu_buf1 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
+		printf("  cpufastu_buf2: 0x%08lx %s\n", (ULONG)g_cpufastu_buf2,
+		       ((ULONG)g_cpufastu_buf2 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
+	}
 
-		// Test 3: CHIP -> FAST
-		printf("*** Test 3: CHIP MEMORY -> FAST MEMORY ***\n");
-		RunComprehensiveTest(ncr, g_chip_buf1, g_fast_buf2, TEST_BUFFER_SIZE);
+	printf("\n=== Starting DMA Tests ===\n");
 
-		// Test 4: FAST -> CHIP
-		printf("*** Test 4: FAST MEMORY -> CHIP MEMORY ***\n");
-		RunComprehensiveTest(ncr, g_fast_buf1, g_chip_buf2, TEST_BUFFER_SIZE);
+	// Test all permutations: every buffer to every other buffer
+	for (src_idx = 0; src_idx < num_buffers; src_idx++) {
+		for (dst_idx = 0; dst_idx < num_buffers; dst_idx++) {
+			// Skip if source and destination are the same buffer
+			if (src_idx == dst_idx)
+				continue;
 
+			TestDMATransfer(ncr,
+			                *buffers[src_idx].buf, buffers[src_idx].name,
+			                *buffers[dst_idx].buf, buffers[dst_idx].name);
+		}
 	}
 
 	printf("\n=== All DMA Tests Complete ===\n\n");
