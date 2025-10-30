@@ -10,15 +10,56 @@
 /*
  * Check if NCR 53C710 chip is present
  * Returns 0 if present, -1 if not detected
+ *
+ * NOTE: Must be called from supervisor mode!
+ *
+ * On A4000T, we must configure GARY chipset and set DCNTL.EA before
+ * any other access to the NCR chip, otherwise the bus will hang.
  */
 LONG DetectNCR(volatile struct ncr710 *ncr)
 {
+	volatile UBYTE *gary = (volatile UBYTE *)0x00DE0000;
+	UBYTE gary_timeout;
 	UBYTE istat_before, istat_after;
 
 	printf("Detecting NCR 53C710 chip...\n");
 
-	// Read ISTAT register twice - on real hardware this should be consistent
-	// On non-existent hardware, reads typically return 0xFF or random values
+	// Following the A4000T ROM initialization sequence:
+	// See kickstart/scsidisk/init.asm lines 294-307
+
+	printf("  Configuring GARY chipset for NCR access...\n");
+	Disable();
+
+	// Set GARY to DSACK timeout mode (9us) instead of bus error
+	*gary = 0x00;
+
+	// Read GARY register to reset timeout bit
+	gary_timeout = *gary;
+
+	// Critical: Must set EA bit in DCNTL before any other NCR register access!
+	// This links STERM and SLAC internally so the chip will respond
+	printf("  Setting DCNTL.EA bit...\n");
+	ncr->dcntl = DCNTLF_EA | DCNTLF_COM;
+
+	// Check if GARY timed out (bit 7 set means timeout = no chip)
+	gary_timeout = *gary;
+
+	// Set GARY back to bus-error mode
+	*gary = 0x80;
+
+	Enable();
+
+	// Check if we got a timeout
+	if (gary_timeout & 0x80) {
+		printf("ERROR: NCR chip not detected (GARY timeout)\n");
+		printf("  The hardware may not be present\n");
+		return -1;
+	}
+
+	printf("  GARY timeout check passed\n");
+
+	// Now we can safely read ISTAT register
+	printf("  Reading ISTAT register...\n");
 	istat_before = ncr->istat;
 	istat_after = ncr->istat;
 
