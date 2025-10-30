@@ -4,6 +4,7 @@
 
 #include "ncr_dmatest.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <exec/execbase.h>
 #include <exec/memory.h>
 #include <proto/exec.h>
@@ -13,8 +14,45 @@
 extern LONG InitNCR(volatile struct ncr710 *ncr);
 extern LONG CheckNCRStatus(volatile struct ncr710 *ncr, const char *context);
 
+/* Global buffers for cleanup on CTRL-C */
+static UBYTE *g_chip_buf1 = NULL;
+static UBYTE *g_chip_buf2 = NULL;
+static UBYTE *g_fast_buf1 = NULL;
+static UBYTE *g_fast_buf2 = NULL;
+static BOOL g_cleanup_done = FALSE;
+
 /* Simple pseudo-random number generator for test patterns */
 static ULONG random_seed = 0x12345678;
+
+/*
+ * Cleanup function for CTRL-C or normal exit
+ */
+static void CleanupBuffers(void)
+{
+	if (g_cleanup_done)
+		return;
+
+	printf("\nCleaning up buffers...\n");
+
+	if (g_chip_buf1) {
+		FreeMem(g_chip_buf1, TEST_BUFFER_SIZE);
+		g_chip_buf1 = NULL;
+	}
+	if (g_chip_buf2) {
+		FreeMem(g_chip_buf2, TEST_BUFFER_SIZE);
+		g_chip_buf2 = NULL;
+	}
+	if (g_fast_buf1) {
+		FreeMem(g_fast_buf1, TEST_BUFFER_SIZE);
+		g_fast_buf1 = NULL;
+	}
+	if (g_fast_buf2) {
+		FreeMem(g_fast_buf2, TEST_BUFFER_SIZE);
+		g_fast_buf2 = NULL;
+	}
+
+	g_cleanup_done = TRUE;
+}
 
 static ULONG GetRandom(void)
 {
@@ -170,7 +208,7 @@ LONG RunDMATest(volatile struct ncr710 *ncr, UBYTE *src, UBYTE *dst, ULONG size)
 }
 
 /*
- * Print test result summary
+ * Print test result summary (only prints failures)
  */
 void PrintTestResults(struct TestResult *result)
 {
@@ -190,20 +228,22 @@ void PrintTestResults(struct TestResult *result)
 		"VERIFY_ERROR"
 	};
 
-	printf("  Test #%ld: Pattern=%s Size=%ld Status=%s",
-	        result->test_number,
-	        pattern_names[result->pattern_type],
-	        result->size,
-	        status_names[result->status]);
+	// Only print if test failed
+	if (result->status != TEST_SUCCESS) {
+		printf("  FAILED Test #%ld: Pattern=%s Size=%ld Status=%s",
+		        result->test_number,
+		        pattern_names[result->pattern_type],
+		        result->size,
+		        status_names[result->status]);
 
-	if (result->status == TEST_VERIFY_ERROR) {
-		printf("\n    ERROR at offset 0x%lx: Expected=0x%02lx Actual=0x%02lx",
-		        result->error_offset,
-		        result->expected_value,
-		        result->actual_value);
+		if (result->status == TEST_VERIFY_ERROR) {
+			printf("\n    ERROR at offset 0x%lx: Expected=0x%02lx Actual=0x%02lx",
+			        result->error_offset,
+			        result->expected_value,
+			        result->actual_value);
+		}
+
 	}
-
-	printf("\n");
 }
 
 /*
@@ -219,14 +259,13 @@ LONG RunComprehensiveTest(volatile struct ncr710 *ncr,
 	LONG status;
 	ULONG passed = 0, failed = 0;
 
-	printf("\n=== Starting Comprehensive DMA Tests ===\n");
-	printf("Source buffer: 0x%08lx\n", (ULONG)src_base);
-	printf("Dest buffer:   0x%08lx\n", (ULONG)dst_base);
-	printf("Buffer size:   %ld bytes\n\n", buffer_size);
+	/*printf("\n=== Starting Comprehensive DMA Tests ===\n");
+	printf("Running tests");*/
 
 	// Test various sizes and patterns
 	for (size = MIN_TEST_SIZE; size <= buffer_size && size <= MAX_TEST_SIZE; size *= 2) {
 		for (pattern = 0; pattern < NUM_TEST_PATTERNS; pattern++) {
+
 			test_num++;
 
 			// Initialize result structure
@@ -254,22 +293,31 @@ LONG RunComprehensiveTest(volatile struct ncr710 *ncr,
 
 			result.status = status;
 
-			// Print results
-			PrintTestResults(&result);
-
+			// Print progress indicator (dot for success)
 			if (status == TEST_SUCCESS) {
 				passed++;
 			} else {
+				// Print newline before error details
+				PrintTestResults(&result);
 				failed++;
 				// For now, continue with other tests even if one fails
 			}
 		}
 	}
 
-	printf("\n=== Test Summary ===\n");
-	printf("Total tests: %ld\n", test_num);
-	printf("Passed:      %ld\n", passed);
-	printf("Failed:      %ld\n", failed);
+	if (failed > 0)
+	{
+		printf("\n=== Some tests failed ===\n");
+		printf("Source buffer: 0x%08lx\n", (ULONG)src_base);
+		printf("Dest buffer:   0x%08lx\n", (ULONG)dst_base);
+		printf("Buffer size:   %ld bytes\n", buffer_size);
+		printf("\n");
+	
+		printf("\n=== Test Summary ===\n");
+		printf("Total tests: %ld\n", test_num);
+		printf("Passed:      %ld\n", passed);
+		printf("Failed:      %ld\n", failed);
+	}
 
 	return (failed == 0) ? 0 : -1;
 }
@@ -279,58 +327,73 @@ LONG RunComprehensiveTest(volatile struct ncr710 *ncr,
  */
 void TestMemoryTypes(volatile struct ncr710 *ncr)
 {
-	UBYTE *chip_buf1 = NULL, *chip_buf2 = NULL;
-	UBYTE *fast_buf1 = NULL, *fast_buf2 = NULL;
+	atexit(CleanupBuffers);
 
 	printf("\n=== NCR 53C710 DMA Memory Test Tool ===\n\n");
 
-	// Allocate chip memory buffers
-	chip_buf1 = AllocMem(TEST_BUFFER_SIZE, MEMF_CHIP | MEMF_CLEAR);
-	chip_buf2 = AllocMem(TEST_BUFFER_SIZE, MEMF_CHIP | MEMF_CLEAR);
+	// Allocate chip memory buffers using globals for cleanup
+	// Note: AllocMem returns longword-aligned memory by default
+	g_chip_buf1 = AllocMem(TEST_BUFFER_SIZE, MEMF_CHIP | MEMF_CLEAR);
+	g_chip_buf2 = AllocMem(TEST_BUFFER_SIZE, MEMF_CHIP | MEMF_CLEAR);
 
 	// Allocate fast memory buffers
-	fast_buf1 = AllocMem(TEST_BUFFER_SIZE, MEMF_FAST | MEMF_CLEAR);
-	fast_buf2 = AllocMem(TEST_BUFFER_SIZE, MEMF_FAST | MEMF_CLEAR);
+	g_fast_buf1 = AllocMem(TEST_BUFFER_SIZE, MEMF_FAST | MEMF_CLEAR);
+	g_fast_buf2 = AllocMem(TEST_BUFFER_SIZE, MEMF_FAST | MEMF_CLEAR);
 
 	// If we couldn't get FAST, try PUBLIC (any memory)
-	if (!fast_buf1)
-		fast_buf1 = AllocMem(TEST_BUFFER_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
-	if (!fast_buf2)
-		fast_buf2 = AllocMem(TEST_BUFFER_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
+	if (!g_fast_buf1)
+		g_fast_buf1 = AllocMem(TEST_BUFFER_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
+	if (!g_fast_buf2)
+		g_fast_buf2 = AllocMem(TEST_BUFFER_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
 
-	if (!chip_buf1 || !chip_buf2) {
+	if (!g_chip_buf1 || !g_chip_buf2) {
 		printf("ERROR: Could not allocate chip memory buffers\n");
 		goto cleanup;
 	}
 
-	if (!fast_buf1 || !fast_buf2) {
+	if (!g_fast_buf1 || !g_fast_buf2) {
 		printf("ERROR: Could not allocate fast memory buffers\n");
 		goto cleanup;
 	}
 
-	// Test 1: CHIP -> CHIP
-	printf("\n*** Test 1: CHIP MEMORY -> CHIP MEMORY ***\n");
-	RunComprehensiveTest(ncr, chip_buf1, chip_buf2, TEST_BUFFER_SIZE);
+	// Verify buffer alignment (should be longword-aligned)
+	printf("Buffer addresses:\n");
+	printf("  chip_buf1: 0x%08lx %s\n", (ULONG)g_chip_buf1,
+	       ((ULONG)g_chip_buf1 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
+	printf("  chip_buf2: 0x%08lx %s\n", (ULONG)g_chip_buf2,
+	       ((ULONG)g_chip_buf2 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
+	printf("  fast_buf1: 0x%08lx %s\n", (ULONG)g_fast_buf1,
+	       ((ULONG)g_fast_buf1 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
+	printf("  fast_buf2: 0x%08lx %s\n\n", (ULONG)g_fast_buf2,
+	       ((ULONG)g_fast_buf2 & 3) ? "WARNING: NOT LONGWORD ALIGNED!" : "(aligned)");
 
-	// Test 2: FAST -> FAST
-	printf("\n*** Test 2: FAST MEMORY -> FAST MEMORY ***\n");
-	RunComprehensiveTest(ncr, fast_buf1, fast_buf2, TEST_BUFFER_SIZE);
+	for (int iteration=0; iteration<5000; iteration++)
+	{
+		printf("Iteration %d/5000\n", iteration+1);
+		// Run tests for each memory type combination
 
-	// Test 3: CHIP -> FAST
-	printf("\n*** Test 3: CHIP MEMORY -> FAST MEMORY ***\n");
-	RunComprehensiveTest(ncr, chip_buf1, fast_buf2, TEST_BUFFER_SIZE);
+		// Test 1: CHIP -> CHIP
+		printf("*** Test 1: CHIP MEMORY -> CHIP MEMORY ***\n");
+		RunComprehensiveTest(ncr, g_chip_buf1, g_chip_buf2, TEST_BUFFER_SIZE);
 
-	// Test 4: FAST -> CHIP
-	printf("\n*** Test 4: FAST MEMORY -> CHIP MEMORY ***\n");
-	RunComprehensiveTest(ncr, fast_buf1, chip_buf2, TEST_BUFFER_SIZE);
+		// Test 2: FAST -> FAST
+		printf("*** Test 2: FAST MEMORY -> FAST MEMORY ***\n");
+		RunComprehensiveTest(ncr, g_fast_buf1, g_fast_buf2, TEST_BUFFER_SIZE);
+
+		// Test 3: CHIP -> FAST
+		printf("*** Test 3: CHIP MEMORY -> FAST MEMORY ***\n");
+		RunComprehensiveTest(ncr, g_chip_buf1, g_fast_buf2, TEST_BUFFER_SIZE);
+
+		// Test 4: FAST -> CHIP
+		printf("*** Test 4: FAST MEMORY -> CHIP MEMORY ***\n");
+		RunComprehensiveTest(ncr, g_fast_buf1, g_chip_buf2, TEST_BUFFER_SIZE);
+
+	}
 
 	printf("\n=== All DMA Tests Complete ===\n\n");
 
 cleanup:
-	if (chip_buf1) FreeMem(chip_buf1, TEST_BUFFER_SIZE);
-	if (chip_buf2) FreeMem(chip_buf2, TEST_BUFFER_SIZE);
-	if (fast_buf1) FreeMem(fast_buf1, TEST_BUFFER_SIZE);
-	if (fast_buf2) FreeMem(fast_buf2, TEST_BUFFER_SIZE);
+	CleanupBuffers();
 }
 
 /*

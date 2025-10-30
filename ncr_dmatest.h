@@ -170,7 +170,7 @@ struct rw_reg_inst {
 			      ((ULONG)&((struct ncr710 *)0)->reg))) = (val)
 
 /* Test parameters */
-#define TEST_BUFFER_SIZE  (64*1024)   // 64KB test buffer
+#define TEST_BUFFER_SIZE  (128*1024)   // 64KB test buffer
 #define MAX_TEST_SIZE     (16*1024)   // Max DMA transfer size per test
 #define MIN_TEST_SIZE     4           // Minimum DMA transfer size
 #define NUM_TEST_PATTERNS 5           // Number of test patterns
