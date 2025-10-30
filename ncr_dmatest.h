@@ -152,6 +152,14 @@ struct rw_reg_inst {
 #define SCNTL1F_SND	(1<<1)
 #define SCNTL1F_RCV	(1<<0)
 
+// ctest0
+#define CTEST0F_BTD	(1<<2)	// Byte-to-byte timer disable
+#define CTEST0F_EAN	(1<<1)	// Enable active negation
+#define CTEST0F_ERF	(1<<0)	// Enable REQ/ACK filter
+
+// sxfer
+#define SXFERF_DHP	(1<<7)	// Disable halt on parity error
+
 /* Hardware addresses for A4000T */
 #define NCR_ADDRESS	 0x00dd0040
 #define NCR_WRITE_OFFSET 0x00000080	// offset for long writes - 128 bytes
