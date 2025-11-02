@@ -122,15 +122,9 @@ kickstart: $(ROM_TARGET) $(ROM_SPLIT_DIR)/index.txt
 	@echo "Building patched kickstart ROM..."
 	@# Remove modules to make space for our module
 	@echo "Removing modules to make space..."
-	@grep -v -e "potgo.resource" \
-	         -e "audio.device" \
-	         -e "wbtask" \
-	         -e "ramdrive" \
-	         -e "shell_" \
-	         -e "bootmenu" \
-	         -e "romboot" \
+	@grep -v -e "workbench.library" \
 	         $(ROM_SPLIT_DIR)/index.txt > $(ROM_SPLIT_DIR)/index_patched.txt || true
-	@echo "Removed: potgo, audio, wbtask, ramdrive, shell, bootmenu, romboot"
+	@echo "Removed: workbench" 
 	@# Add our ROM module to the index
 	@echo "$(ROM_TARGET)" >> $(ROM_SPLIT_DIR)/index_patched.txt
 	@# Copy our module to the split directory

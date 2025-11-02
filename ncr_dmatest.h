@@ -157,6 +157,9 @@ struct rw_reg_inst {
 #define CTEST0F_EAN	(1<<1)	// Enable active negation
 #define CTEST0F_ERF	(1<<0)	// Enable REQ/ACK filter
 
+// ctest7
+#define CTREST7_CDIS	(1<<7)	// Disable burst bus mode
+
 // sxfer
 #define SXFERF_DHP	(1<<7)	// Disable halt on parity error
 

@@ -100,7 +100,7 @@ LONG ResetNCR(volatile struct ncr710 *ncr)
 {
 	UBYTE istat;
 	ULONG status;
-
+	Disable();
 	printf("Resetting NCR 53C710...\n");
 
 	// Read initial ISTAT value
@@ -120,6 +120,16 @@ LONG ResetNCR(volatile struct ncr710 *ncr)
 	ncr->istat = 0;
 	poll_cia(100000);  // 100ms delay
 
+	// CRITICAL: Disable burst bus mode immediately after reset (from ROM)
+	// This must be done before accessing other registers
+	printf("  Disabling burst bus mode...\n");
+	ncr->ctest7 |= CTREST7_CDIS;
+
+	// CRITICAL: Configure ctest0 - disable timer FIRST to avoid select timeouts
+	// no byte-to-byte timer, enable active negation, filter REQ/ACK
+	printf("  Configuring chip test register 0...\n");
+	ncr->ctest0 = CTEST0F_BTD | CTEST0F_EAN | CTEST0F_ERF;
+
 	printf("  NCR chip reset complete\n");
 
 	// Clear any pending interrupts from reset/abort
@@ -130,6 +140,8 @@ LONG ResetNCR(volatile struct ncr710 *ncr)
 		status = *((volatile ULONG *) &(ncr->sstat2));
 		(void)status;
 	}
+	
+	Enable();
 
 	printf("NCR reset complete (ISTAT=0x%02lx)\n", (ULONG)ncr->istat);
 	return 0;
