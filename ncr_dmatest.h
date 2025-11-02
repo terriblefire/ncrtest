@@ -207,14 +207,27 @@ struct TestResult {
 /* Global SysBase pointer - defined in romstart.asm */
 extern struct ExecBase *SysBase;
 
-/* Function prototypes */
+/* Function prototypes - NCR chip operations */
 void kprintf(char *,...);
 void TestMain(void);
 LONG InitNCR(volatile struct ncr710 *ncr);
+LONG InitNCRForSCSI(volatile struct ncr710 *ncr, UBYTE host_id);
 LONG ResetNCR(volatile struct ncr710 *ncr);
 LONG RunDMATest(volatile struct ncr710 *ncr, UBYTE *src, UBYTE *dst, ULONG size);
 void FillPattern(UBYTE *buffer, ULONG size, ULONG pattern_type);
 LONG VerifyBuffer(UBYTE *src, UBYTE *dst, ULONG size, struct TestResult *result);
 void PrintTestResults(struct TestResult *result);
+
+/* Function prototypes - SCSI operations (from scsi.c) */
+LONG SCSI_TestUnitReady(volatile struct ncr710 *ncr, UBYTE target_id, UBYTE lun);
+LONG SCSI_ScanBus(volatile struct ncr710 *ncr, UBYTE host_id);
+LONG SCSI_Read6(volatile struct ncr710 *ncr, UBYTE target_id, UBYTE lun,
+                ULONG lba, UBYTE num_blocks, UBYTE *buffer);
+
+/* Function prototypes - Interrupt handling (from ncr_interrupt.c) */
+LONG InstallNCRInterrupt(volatile struct ncr710 *ncr);
+void RemoveNCRInterrupt(void);
+void GetNCRInterruptStats(ULONG *total, ULONG *dma, ULONG *scsi);
+void GetLastNCRInterrupt(UBYTE *istat, UBYTE *dstat, UBYTE *sstat0, ULONG *dsp);
 
 #endif /* NCR_DMATEST_H */

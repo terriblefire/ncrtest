@@ -3,11 +3,15 @@
  */
 
 #include "ncr_dmatest.h"
+#include "dprintf.h"
 #include <stdio.h>
 #include <exec/execbase.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <hardware/cia.h>
+
+/* Use dbgprintf for dual output (console + debug) */
+#define printf dbgprintf
 
 /*
  * CIA-based delay function (from ROM code)
@@ -212,6 +216,99 @@ LONG InitNCR(volatile struct ncr710 *ncr)
 	printf("  DMODE:  0x%02lx\n", (ULONG)ncr->dmode);
 	printf("  DCNTL:  0x%02lx\n", (ULONG)ncr->dcntl);
 	printf("  DIEN:   0x%02lx (interrupts disabled)\n", (ULONG)ncr->dien);
+
+	return 0;
+}
+
+/*
+ * Initialize the NCR 53C710 for SCSI operations
+ * Based on init_chip() from kickstart/scsidisk/ncr.c
+ * This version enables SCSI bus operations for real SCSI commands
+ */
+LONG InitNCRForSCSI(volatile struct ncr710 *ncr, UBYTE host_id)
+{
+	printf("Initializing NCR 53C710 for SCSI operations...\n");
+
+	// First detect if the chip is present
+	if (DetectNCR(ncr) < 0)
+		return -1;
+
+	// Reset the chip
+	if (ResetNCR(ncr) < 0)
+		return -1;
+
+	// Enable parity generation and set arbitration mode (from ROM init_chip line 950-951)
+	// ARB1|ARB0 = 11 (full arbitration with reselection) - chip power-up default
+	// EPG = Enable Parity Generation
+	printf("  Enabling parity generation and arbitration...\n");
+	ncr->scntl0 = SCNTL0F_ARB1 | SCNTL0F_ARB0 | SCNTL0F_EPG;
+
+	// Reset the SCSI bus (from ROM init_chip lines 953-956)
+	printf("  Resetting SCSI bus...\n");
+	ncr->scntl1 = SCNTL1F_RST;  // Assert RST
+	poll_cia(25);                // Wait 25us
+	ncr->scntl1 &= ~SCNTL1F_RST; // Clear RST
+	printf("  Waiting for devices to spin up (5 seconds)...\n");
+	poll_cia(5000000);           // Wait 5 seconds for devices to recover and spin up
+
+	// Set our SCSI ID (usually 7 for host)
+	printf("  Setting SCSI ID to %ld...\n", (ULONG)host_id);
+	ncr->scid = (1 << host_id);
+
+	// Enable selection/reselection (from ROM init_chip line 959)
+	printf("  Enabling selection/reselection...\n");
+	ncr->scntl1 |= SCNTL1F_ESR;
+
+	// Disable halt on parity error (from ROM init_chip line 961)
+	// DHP = Disable Halt on Parity - we'll handle parity errors ourselves
+	ncr->sxfer = SXFERF_DHP;
+
+	// Configure DMA mode
+	// BL1|BL0 = burst length (11 = 8 transfers, matching ROM)
+	// FC2 = function code
+	printf("  Configuring DMA mode...\n");
+	ncr->dmode = DMODEF_BL1 | DMODEF_BL0 | DMODEF_FC2;
+
+	// Configure DMA control
+	// EA = Enable Ack (CRITICAL for A4000T)
+	// COM = Compatibility mode
+	// Make sure SSM (Single Step Mode) is NOT set
+	printf("  Configuring DMA control...\n");
+	ncr->dcntl = DCNTLF_EA | DCNTLF_COM;  // No SSM bit - continuous execution
+	printf("  DCNTL set to: 0x%02lx (EA=%d COM=%d SSM=%d)\n",
+	       (ULONG)ncr->dcntl,
+	       (ncr->dcntl & DCNTLF_EA) ? 1 : 0,
+	       (ncr->dcntl & DCNTLF_COM) ? 1 : 0,
+	       (ncr->dcntl & DCNTLF_SSM) ? 1 : 0);
+
+	// For now, keep interrupts disabled and use polling
+	printf("  Disabling interrupts (using polling mode)...\n");
+	ncr->sien = 0;
+	ncr->dien = 0;
+
+	// Clear any pending status
+	(void)ncr->sstat0;
+	(void)ncr->sstat1;
+	(void)ncr->sstat2;
+	(void)ncr->dstat;
+
+	// Clear scratch registers
+	WRITE_LONG(ncr, scratch, 0);
+	WRITE_LONG(ncr, temp, 0);
+
+	printf("NCR SCSI initialization complete\n");
+	printf("  Host ID: %ld\n", (ULONG)host_id);
+	printf("  SCNTL0:  0x%02lx\n", (ULONG)ncr->scntl0);
+	printf("  SCNTL1:  0x%02lx\n", (ULONG)ncr->scntl1);
+	printf("  SCID:    0x%02lx\n", (ULONG)ncr->scid);
+	printf("  SXFER:   0x%02lx\n", (ULONG)ncr->sxfer);
+	printf("  DMODE:   0x%02lx\n", (ULONG)ncr->dmode);
+	printf("  DCNTL:   0x%02lx\n", (ULONG)ncr->dcntl);
+
+	// Check SCSI bus signals
+	printf("  SBCL (SCSI Bus Control Lines): 0x%02lx\n", (ULONG)ncr->sbcl);
+	printf("  SSTAT1: 0x%02lx\n", (ULONG)ncr->sstat1);
+	printf("  SSTAT2: 0x%02lx\n", (ULONG)ncr->sstat2);
 
 	return 0;
 }
