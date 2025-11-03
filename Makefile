@@ -37,7 +37,7 @@ LDFLAGS_ROM = -sc -Bstatic -Cvbcc -nostdlib -Rshort -b amigahunk -s
 ASFLAGS = -quiet -Fhunk -kick1hunks -nosym -m68040 -no-opt
 
 # Source files for standard executable
-C_SRCS = main.c ncr_init.c ncr_dmatest.c
+C_SRCS = main.c ncr_init.c ncr_dmatest.c dprintf.c
 
 # Source files for ROM module
 ROM_C_SRCS = rom_resident.c rom_main.c
