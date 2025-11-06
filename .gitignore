@@ -24,7 +24,6 @@ venv/
 
 # Claude Code
 .claude/
-CLAUDE.md
 
 # Output files
 output.txt
