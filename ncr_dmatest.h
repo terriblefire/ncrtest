@@ -178,6 +178,11 @@ struct rw_reg_inst {
 #define MIN_TEST_SIZE     4           // Minimum DMA transfer size
 #define NUM_TEST_PATTERNS 5           // Number of test patterns
 
+/* Scatter-gather test parameters */
+#define MAX_SG_SEGMENTS   8           // Maximum scatter-gather segments
+#define SG_SEGMENT_SIZE   (4*1024)    // Size of each scatter-gather segment
+#define SG_STRESS_ITERATIONS 1000     // Stress test iteration count
+
 /* Test status codes */
 #define TEST_SUCCESS      0
 #define TEST_FAILED       1
