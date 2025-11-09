@@ -17,6 +17,15 @@
 #define S_READ10		0x28
 #define S_WRITE10		0x2a
 
+/* SCSI block size (standard) */
+#define SCSI_BLOCK_SIZE		512
+
+/* Read parameters */
+#define READ_32MB_SIZE		(32 * 1024 * 1024)	// 32MB
+#define READ_32MB_BLOCKS	(READ_32MB_SIZE / SCSI_BLOCK_SIZE)  // 65536 blocks
+#define READ_CHUNK_SIZE		(64 * 1024)		// 64KB per transfer
+#define READ_CHUNK_BLOCKS	(READ_CHUNK_SIZE / SCSI_BLOCK_SIZE)  // 128 blocks
+
 /* SCSI Status Codes */
 #define SCSI_GOOD		0x00
 #define SCSI_CHECK_CONDITION	0x02
@@ -84,10 +93,10 @@ struct DSA_entry {
 	struct move_data    recv_msg;		// 32  1 byte to message
 	struct move_data    send_msg;		// 40  N byte send
 	struct move_data    command_data;	// 48  command move
-	UBYTE send_buf[8];			// 56  message out buffer
-	UBYTE recv_buf[8];			// 64  message in buffer
-	UBYTE status_buf[1];			// 72  status byte
-	UBYTE pad[3];				// 73  padding to longword
+	UBYTE send_buf[16];			// 56  message + command buffer (expanded for READ(10))
+	UBYTE recv_buf[8];			// 72  message in buffer
+	UBYTE status_buf[1];			// 80  status byte
+	UBYTE pad[3];				// 81  padding to longword
 };
 
 /* SCSI Command Request */
@@ -119,5 +128,6 @@ struct InquiryData {
 LONG InitNCRForSCSI(volatile struct ncr710 *ncr);
 LONG DoInquiry(volatile struct ncr710 *ncr, UBYTE target_id, struct InquiryData *data);
 void PrintInquiryData(struct InquiryData *data);
+LONG DoRead32MB(volatile struct ncr710 *ncr, UBYTE target_id);
 
 #endif /* NCR_SCSI_H */

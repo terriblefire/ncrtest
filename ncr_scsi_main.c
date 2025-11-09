@@ -22,10 +22,11 @@ print_usage(void)
 	dbgprintf("Usage: ncr_scsi <command> [options]\n\n");
 	dbgprintf("Commands:\n");
 	dbgprintf("  inquiry <id>              - Send INQUIRY to SCSI ID (0-7)\n");
+	dbgprintf("  read <id>                 - Read first 32MB from disk at SCSI ID (0-7)\n");
 	dbgprintf("\n");
 	dbgprintf("Examples:\n");
 	dbgprintf("  ncr_scsi inquiry 3        - Query device at SCSI ID 3\n");
-	dbgprintf("  ncr_scsi inquiry 0        - Query device at SCSI ID 0\n");
+	dbgprintf("  ncr_scsi read 3           - Read 32MB from disk at SCSI ID 3\n");
 	dbgprintf("\n");
 }
 
@@ -98,6 +99,30 @@ main(int argc, char **argv)
 		}
 
 		FreeMem(inq_data, sizeof(struct InquiryData));
+
+		return (result == 0) ? 0 : 1;
+
+	} else if (strcmp(argv[1], "read") == 0) {
+		// READ command
+		if (argc < 3) {
+			dbgprintf("ERROR: Missing SCSI ID\n");
+			dbgprintf("Usage: ncr_scsi read <id>\n");
+			return 1;
+		}
+
+		target_id = atoi(argv[2]);
+		if (target_id > 7) {
+			dbgprintf("ERROR: Invalid SCSI ID %ld (must be 0-7)\n",
+			          (ULONG)target_id);
+			return 1;
+		}
+
+		// Execute READ 32MB
+		result = DoRead32MB(ncr, target_id);
+
+		if (result != 0) {
+			dbgprintf("\nREAD failed with error code %ld\n", result);
+		}
 
 		return (result == 0) ? 0 : 1;
 

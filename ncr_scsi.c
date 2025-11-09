@@ -305,3 +305,237 @@ PrintInquiryData(struct InquiryData *data)
 	dbgprintf("Revision:     '%s'\n", revision);
 	dbgprintf("\n");
 }
+
+/*
+ * Build DSA entry for READ(10) command
+ */
+static void
+BuildRead10DSA(struct DSA_entry *dsa, UBYTE target_id, ULONG lba, UWORD blocks, UBYTE *data_buf)
+{
+	// Clear entire DSA
+	memset(dsa, 0, sizeof(struct DSA_entry));
+
+	// Setup data move (blocks * 512 bytes)
+	dsa->move_data.len  = blocks * SCSI_BLOCK_SIZE;
+	dsa->move_data.addr = (ULONG)data_buf;
+
+	// Setup selection data (ID and sync value)
+	dsa->select_data.res1 = 0;
+	dsa->select_data.id   = (1 << target_id);
+	dsa->select_data.sync = 0;		// Async transfer
+	dsa->select_data.res2 = 0;
+
+	// Setup status byte location
+	dsa->status_data.len  = 1;
+	dsa->status_data.addr = (ULONG)&(dsa->status_buf[0]);
+
+	// Setup message in location
+	dsa->recv_msg.len  = 1;
+	dsa->recv_msg.addr = (ULONG)&(dsa->recv_buf[0]);
+
+	// Setup message out (IDENTIFY + LUN)
+	dsa->send_msg.len  = 1;
+	dsa->send_msg.addr = (ULONG)&(dsa->send_buf[0]);
+	dsa->send_buf[0] = MSG_IDENTIFY;
+
+	// Setup READ(10) command (10 bytes)
+	dsa->command_data.len  = 10;
+	dsa->command_data.addr = (ULONG)&(dsa->send_buf[1]);
+	dsa->send_buf[1] = S_READ10;		// READ(10) opcode
+	dsa->send_buf[2] = 0x00;		// LUN = 0, flags
+	dsa->send_buf[3] = (lba >> 24) & 0xFF;	// LBA byte 0 (MSB)
+	dsa->send_buf[4] = (lba >> 16) & 0xFF;	// LBA byte 1
+	dsa->send_buf[5] = (lba >> 8) & 0xFF;	// LBA byte 2
+	dsa->send_buf[6] = lba & 0xFF;		// LBA byte 3 (LSB)
+	dsa->send_buf[7] = 0x00;		// Reserved
+	dsa->send_buf[8] = (blocks >> 8) & 0xFF; // Transfer length MSB
+	dsa->send_buf[9] = blocks & 0xFF;	// Transfer length LSB
+	dsa->send_buf[10] = 0x00;		// Control
+}
+
+/*
+ * Execute READ(10) command for a chunk
+ * Returns: 0 on success, negative on error
+ */
+static LONG
+DoRead10Chunk(volatile struct ncr710 *ncr, UBYTE target_id, ULONG lba, UWORD blocks, UBYTE *data_buf)
+{
+	struct DSA_entry *dsa;
+	ULONG timeout;
+	UBYTE istat, dstat;
+	LONG result = -1;
+
+	// Allocate DSA in FAST memory
+	dsa = AllocMem(sizeof(struct DSA_entry), MEMF_FAST | MEMF_CLEAR);
+	if (!dsa) {
+		dbgprintf("ERROR: Could not allocate DSA\n");
+		return -1;
+	}
+
+	// Build DSA for READ(10)
+	BuildRead10DSA(dsa, target_id, lba, blocks, data_buf);
+
+	// Flush caches
+	CacheClearU();
+
+	// Load DSA register
+	WRITE_LONG(ncr, dsa, (ULONG)dsa);
+
+	// Clear any pending interrupts
+	(void)ncr->istat;
+	(void)ncr->dstat;
+	(void)ncr->sstat0;
+
+	// Start SCRIPTS execution (reuse same SCRIPTS as INQUIRY)
+	WRITE_LONG(ncr, dsp, (ULONG)inquiry_script);
+
+	// Wait for completion
+	for (timeout = 0; timeout < 5000000; timeout++) {
+		istat = ncr->istat;
+
+		// Check for DMA interrupt
+		if (istat & ISTATF_DIP) {
+			dstat = ncr->dstat;
+
+			// Check for SCRIPTS interrupt
+			if (dstat & DSTATF_SIR) {
+				ULONG dsps = ncr->dsps;
+
+				if (dsps == 0xDEADBEEF) {
+					// Success!
+					if (dsa->status_buf[0] == SCSI_GOOD) {
+						result = 0;
+					} else {
+						dbgprintf("ERROR: Bad status (0x%02lx)\n",
+						          (ULONG)dsa->status_buf[0]);
+						result = -2;
+					}
+					break;
+				} else if (dsps == 0xBADBAD00) {
+					dbgprintf("ERROR: Selection failed\n");
+					result = -3;
+					break;
+				} else {
+					dbgprintf("ERROR: Unexpected interrupt (0x%08lx)\n", dsps);
+					result = -4;
+					break;
+				}
+			}
+
+			// Check for errors
+			if (dstat & (DSTATF_IID | DSTATF_ABRT | DSTATF_SSI)) {
+				dbgprintf("ERROR: DMA error (DSTAT=0x%02lx)\n", (ULONG)dstat);
+				result = -5;
+				break;
+			}
+		}
+
+		// Check for SCSI interrupt
+		if (istat & ISTATF_SIP) {
+			UBYTE sstat0 = ncr->sstat0;
+			dbgprintf("ERROR: SCSI interrupt (SSTAT0=0x%02lx)\n", (ULONG)sstat0);
+			result = -6;
+			break;
+		}
+	}
+
+	if (timeout >= 5000000) {
+		dbgprintf("ERROR: Timeout waiting for completion\n");
+		result = -7;
+	}
+
+	// Flush caches after DMA
+	CacheClearU();
+
+	// Free DSA
+	FreeMem(dsa, sizeof(struct DSA_entry));
+
+	return result;
+}
+
+/*
+ * Read first 32MB from SCSI disk into FAST memory
+ * Returns: 0 on success, negative on error
+ */
+LONG
+DoRead32MB(volatile struct ncr710 *ncr, UBYTE target_id)
+{
+	UBYTE *buffer;
+	ULONG lba;
+	ULONG total_blocks = READ_32MB_BLOCKS;
+	ULONG blocks_read = 0;
+	LONG result;
+
+	dbgprintf("\n=== Reading 32MB from SCSI ID %ld ===\n", (ULONG)target_id);
+	dbgprintf("Total blocks: %ld (%ld bytes)\n", total_blocks, READ_32MB_SIZE);
+	dbgprintf("Chunk size: %ld blocks (%ld bytes)\n\n",
+	          (ULONG)READ_CHUNK_BLOCKS, (ULONG)READ_CHUNK_SIZE);
+
+	// Allocate 32MB buffer in FAST memory
+	dbgprintf("Allocating 32MB FAST memory buffer...\n");
+	buffer = AllocMem(READ_32MB_SIZE, MEMF_FAST);
+	if (!buffer) {
+		dbgprintf("ERROR: Could not allocate 32MB FAST memory\n");
+		dbgprintf("Trying CHIP memory instead...\n");
+		buffer = AllocMem(READ_32MB_SIZE, MEMF_CHIP);
+		if (!buffer) {
+			dbgprintf("ERROR: Could not allocate 32MB memory at all\n");
+			return -1;
+		}
+	}
+
+	dbgprintf("Buffer allocated at: 0x%08lx\n\n", (ULONG)buffer);
+
+	// Read in chunks
+	lba = 0;
+	while (blocks_read < total_blocks) {
+		ULONG blocks_to_read = READ_CHUNK_BLOCKS;
+		UBYTE *chunk_buf = buffer + (blocks_read * SCSI_BLOCK_SIZE);
+
+		// Adjust last chunk if needed
+		if (blocks_read + blocks_to_read > total_blocks) {
+			blocks_to_read = total_blocks - blocks_read;
+		}
+
+		dbgprintf("Reading LBA %ld, %ld blocks (%ld KB)... ",
+		          lba, blocks_to_read, (blocks_to_read * SCSI_BLOCK_SIZE) / 1024);
+
+		result = DoRead10Chunk(ncr, target_id, lba, blocks_to_read, chunk_buf);
+
+		if (result != 0) {
+			dbgprintf("FAILED (error %ld)\n", result);
+			dbgprintf("\nRead failed at block %ld\n", blocks_read);
+			FreeMem(buffer, READ_32MB_SIZE);
+			return result;
+		}
+
+		dbgprintf("OK\n");
+
+		lba += blocks_to_read;
+		blocks_read += blocks_to_read;
+
+		// Show progress every 1MB
+		if ((blocks_read % (2048)) == 0) {
+			dbgprintf("  Progress: %ld MB / 32 MB\n", blocks_read / 2048);
+		}
+	}
+
+	dbgprintf("\n=== Read Complete ===\n");
+	dbgprintf("Total read: %ld blocks (%ld MB)\n", blocks_read, blocks_read / 2048);
+	dbgprintf("Buffer at: 0x%08lx - 0x%08lx\n",
+	          (ULONG)buffer, (ULONG)(buffer + READ_32MB_SIZE - 1));
+
+	dbgprintf("\nFirst 256 bytes of data:\n");
+	for (ULONG i = 0; i < 256; i += 16) {
+		dbgprintf("%08lx: ", (ULONG)i);
+		for (ULONG j = 0; j < 16; j++) {
+			dbgprintf("%02lx ", (ULONG)buffer[i + j]);
+		}
+		dbgprintf("\n");
+	}
+
+	dbgprintf("\nNOTE: Buffer not freed - data remains in memory at 0x%08lx\n", (ULONG)buffer);
+	dbgprintf("      Use Avail command to see memory usage\n\n");
+
+	return 0;
+}
