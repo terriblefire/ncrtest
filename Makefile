@@ -43,23 +43,32 @@ C_SRCS = main.c ncr_init.c ncr_dmatest.c dprintf.c
 ROM_C_SRCS = rom_resident.c rom_main.c
 ROM_ASM_SRCS = rom_payload.s
 
+# Source files for SCSI ROM module
+ROM_SCSI_C_SRCS = rom_scsi_resident.c rom_scsi_main.c
+ROM_SCSI_ASM_SRCS = rom_scsi_payload.s
+
 # Object files
 C_OBJS = $(C_SRCS:.c=.o)
 ROM_C_OBJS = $(ROM_C_SRCS:.c=.o)
 ROM_ASM_OBJS = $(ROM_ASM_SRCS:.s=.o)
 ROM_OBJS = $(ROM_C_OBJS) $(ROM_ASM_OBJS)
 
+ROM_SCSI_C_OBJS = $(ROM_SCSI_C_SRCS:.c=.o)
+ROM_SCSI_ASM_OBJS = $(ROM_SCSI_ASM_SRCS:.s=.o)
+ROM_SCSI_OBJS = $(ROM_SCSI_C_OBJS) $(ROM_SCSI_ASM_OBJS)
+
 # Output
 TARGET = ncr_dmatest
 ROM_TARGET = ncr_dmatest.resource
 SCSI_TARGET = ncr_scsi
+SCSI_ROM_TARGET = ncr_scsi.resource
 
 # Source files for SCSI tool
 SCSI_C_SRCS = ncr_scsi_main.c ncr_scsi.c ncr_init.c dprintf.c
 SCSI_C_OBJS = $(SCSI_C_SRCS:.c=.scsi.o)
 
-# Default target - build both
-all: $(TARGET) $(ROM_TARGET) $(SCSI_TARGET)
+# Default target - build all
+all: $(TARGET) $(ROM_TARGET) $(SCSI_TARGET) $(SCSI_ROM_TARGET)
 
 # Build just the standard executable (for CI/CD without vbcc)
 $(TARGET): $(C_OBJS)
@@ -78,6 +87,12 @@ $(ROM_TARGET): $(TARGET) $(ROM_OBJS)
 	$(LD) $(LDFLAGS_ROM) $(ROM_OBJS) -o $@
 	@echo "ROM module built: $(ROM_TARGET)"
 	@ls -lh $(ROM_TARGET)
+
+# Link the SCSI ROM module (vbcc)
+$(SCSI_ROM_TARGET): $(SCSI_TARGET) $(ROM_SCSI_OBJS)
+	$(LD) $(LDFLAGS_ROM) $(ROM_SCSI_OBJS) -o $@
+	@echo "SCSI ROM module built: $(SCSI_ROM_TARGET)"
+	@ls -lh $(SCSI_ROM_TARGET)
 
 # Compile C files for standard executable (gcc)
 main.o: main.c ncr_dmatest.h
@@ -104,9 +119,20 @@ rom_main.o: rom_main.c
 rom_payload.o: rom_payload.s $(TARGET)
 	$(AS) $(ASFLAGS) -o $@ $<
 
+# Compile C files for SCSI ROM module (vbcc)
+rom_scsi_resident.o: rom_scsi_resident.c
+	$(VC) $(CFLAGS_ROM) -c $< -o $@
+
+rom_scsi_main.o: rom_scsi_main.c
+	$(VC) $(CFLAGS_ROM) -c $< -o $@
+
+# Assemble SCSI ROM payload (embeds the ncr_scsi executable)
+rom_scsi_payload.o: rom_scsi_payload.s $(SCSI_TARGET)
+	$(AS) $(ASFLAGS) -o $@ $<
+
 # Clean build artifacts
 clean:
-	rm -f $(C_OBJS) $(ROM_OBJS) $(SCSI_C_OBJS) $(TARGET) $(ROM_TARGET) $(SCSI_TARGET) *.rom *.asm
+	rm -f $(C_OBJS) $(ROM_OBJS) $(ROM_SCSI_OBJS) $(SCSI_C_OBJS) $(TARGET) $(ROM_TARGET) $(SCSI_TARGET) $(SCSI_ROM_TARGET) *.rom *.asm
 	@echo "Clean complete"
 
 # ROM building
@@ -132,25 +158,28 @@ $(ROM_SPLIT_DIR)/index.txt: $(KICKSTART_ROM) $(VENV_DIR)/bin/activate
 	$(ROMTOOL) split -o $(ROM_SPLIT_DIR) --no-version-dir $(KICKSTART_ROM)
 	@echo "ROM split complete"
 
-# Build patched kickstart with our ROM module
-kickstart: $(ROM_TARGET) $(ROM_SPLIT_DIR)/index.txt
+# Build patched kickstart with our ROM modules
+kickstart: $(ROM_TARGET) $(SCSI_ROM_TARGET) $(ROM_SPLIT_DIR)/index.txt
 	@echo "Building patched kickstart ROM..."
-	@# Remove modules to make space for our module
+	@# Remove modules to make space for our modules
 	@echo "Removing modules to make space..."
 	@grep -v -e "workbench.library" \
 	         $(ROM_SPLIT_DIR)/index.txt > $(ROM_SPLIT_DIR)/index_patched.txt || true
-	@echo "Removed: workbench" 
-	@# Add our ROM module to the index
+	@echo "Removed: workbench"
+	@# Add our ROM modules to the index
 	@echo "$(ROM_TARGET)" >> $(ROM_SPLIT_DIR)/index_patched.txt
-	@# Copy our module to the split directory
+	@echo "$(SCSI_ROM_TARGET)" >> $(ROM_SPLIT_DIR)/index_patched.txt
+	@# Copy our modules to the split directory
 	@cp $(ROM_TARGET) $(ROM_SPLIT_DIR)/
+	@cp $(SCSI_ROM_TARGET) $(ROM_SPLIT_DIR)/
 	@# Build the new ROM
 	$(ROMTOOL) build -o $(KICKSTART_OUT) $(ROM_SPLIT_DIR)/index_patched.txt
 	@echo "Patched kickstart created: $(KICKSTART_OUT)"
 	@ls -lh $(KICKSTART_OUT)
 	@echo ""
 	@echo "Verifying ROM contents..."
-	@$(ROMTOOL) scan $(KICKSTART_OUT) | grep -i ncr_dmatest || echo "ERROR: Module not found in ROM!"
+	@$(ROMTOOL) scan $(KICKSTART_OUT) | grep -i ncr_dmatest || echo "ERROR: ncr_dmatest not found in ROM!"
+	@$(ROMTOOL) scan $(KICKSTART_OUT) | grep -i ncr_scsi || echo "ERROR: ncr_scsi not found in ROM!"
 	@echo "✓ Verification complete"
 
 # Verify the patched kickstart
@@ -158,8 +187,8 @@ verify-kickstart: $(KICKSTART_OUT)
 	@echo "Scanning patched ROM..."
 	@$(ROMTOOL) scan $(KICKSTART_OUT)
 	@echo ""
-	@echo "Our module:"
-	@$(ROMTOOL) scan $(KICKSTART_OUT) | grep -i ncr_dmatest
+	@echo "Our modules:"
+	@$(ROMTOOL) scan $(KICKSTART_OUT) | grep -i ncr
 
 # Clean everything including ROM splits and venv
 distclean: clean
