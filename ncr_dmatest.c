@@ -15,6 +15,21 @@
 extern LONG InitNCR(volatile struct ncr710 *ncr);
 extern LONG CheckNCRStatus(volatile struct ncr710 *ncr, const char *context);
 
+/* Interrupt support structures */
+struct DMATESTIntState {
+	struct Task *task;		// Task to signal
+	ULONG signal_mask;		// Signal bit to send
+	volatile UBYTE istat;		// Saved ISTAT value
+	volatile UBYTE dstat;		// Saved DSTAT value
+	volatile ULONG dsps;		// Saved DSPS value
+	volatile LONG int_received;	// Flag: interrupt received
+};
+
+/* Global interrupt state and structures */
+static struct DMATESTIntState g_int_state;
+static struct Interrupt g_int_server;
+static volatile struct ncr710 *g_ncr_chip;
+
 /* Global buffers for cleanup on CTRL-C */
 static UBYTE *g_chip_buf1 = NULL;
 static UBYTE *g_chip_buf2 = NULL;
@@ -121,6 +136,123 @@ static ULONG GetRandom(void)
 {
 	random_seed = random_seed * 1103515245 + 12345;
 	return random_seed;
+}
+
+/*
+ * NCR 53C710 Interrupt Handler for DMA Tests
+ * Called when the NCR chip generates an interrupt
+ */
+static ULONG __attribute__((saveds))
+DMATESTInterruptHandler(void)
+{
+	volatile struct ncr710 *ncr = g_ncr_chip;
+	UBYTE istat;
+
+	// Check if this is our interrupt
+	istat = ncr->istat;
+
+	if (!(istat & ISTATF_DIP)) {
+		return 0;  // Not our interrupt (no DMA interrupt)
+	}
+
+	// Save interrupt status
+	g_int_state.istat = istat;
+	g_int_state.dstat = ncr->dstat;
+	g_int_state.dsps = ncr->dsps;
+	g_int_state.int_received = 1;
+
+	// Signal our task
+	Signal(g_int_state.task, g_int_state.signal_mask);
+
+	return 1;  // Interrupt handled
+}
+
+/*
+ * Setup NCR interrupts for DMA tests
+ */
+static LONG
+SetupDMATestInterrupts(volatile struct ncr710 *ncr)
+{
+	LONG signal_bit;
+
+	dbgprintf("Setting up DMA test interrupts...\n");
+
+	// Save NCR chip pointer for interrupt handler
+	g_ncr_chip = ncr;
+
+	// Allocate a signal bit
+	signal_bit = AllocSignal(-1);
+	if (signal_bit == -1) {
+		dbgprintf("ERROR: Could not allocate signal\n");
+		return -1;
+	}
+
+	// Initialize interrupt state
+	g_int_state.task = FindTask(NULL);
+	g_int_state.signal_mask = 1L << signal_bit;
+	g_int_state.int_received = 0;
+
+	// Setup interrupt server structure
+	g_int_server.is_Node.ln_Type = NT_INTERRUPT;
+	g_int_server.is_Node.ln_Pri = 127;  // High priority
+	g_int_server.is_Node.ln_Name = "NCR 53C710 DMA Test";
+	g_int_server.is_Data = (APTR)&g_int_state;
+	g_int_server.is_Code = (VOID (*)())DMATESTInterruptHandler;
+
+	// Atomic interrupt setup: disable all interrupts during setup
+	Disable();
+
+	// Clear all pending interrupts before adding handler
+	(void)ncr->istat;
+	(void)ncr->dstat;
+	(void)ncr->sstat0;
+	(void)ncr->sstat1;
+	(void)ncr->sstat2;
+
+	// Add interrupt server to the chain
+	AddIntServer(INTB_PORTS, &g_int_server);
+
+	// Now enable NCR interrupts (after handler is installed)
+	// Enable DMA interrupts: SCRIPTS interrupt, illegal instruction, abort
+	ncr->dien = DIENF_SIR | DIENF_IID | DIENF_ABRT;
+
+	// Re-enable all interrupts
+	Enable();
+
+	dbgprintf("  Signal bit: %ld\n", signal_bit);
+	dbgprintf("  Interrupt server added\n");
+	dbgprintf("  NCR interrupts enabled (DIEN=0x%02lx)\n", (ULONG)ncr->dien);
+	dbgprintf("Interrupt setup complete\n\n");
+
+	return 0;
+}
+
+/*
+ * Cleanup NCR interrupts
+ */
+static void
+CleanupDMATestInterrupts(volatile struct ncr710 *ncr)
+{
+	LONG signal_bit;
+
+	dbgprintf("Cleaning up DMA test interrupts...\n");
+
+	// Disable NCR interrupts
+	ncr->dien = 0;
+	ncr->sien = 0;
+
+	// Remove interrupt server
+	RemIntServer(INTB_PORTS, &g_int_server);
+
+	// Free signal
+	for (signal_bit = 0; signal_bit < 32; signal_bit++) {
+		if (g_int_state.signal_mask == (1L << signal_bit)) {
+			FreeSignal(signal_bit);
+			break;
+		}
+	}
+
+	dbgprintf("Interrupt cleanup complete\n");
 }
 
 /*
@@ -278,8 +410,7 @@ static ULONG* BuildScatterGatherScript(UBYTE **sources, UBYTE *dest,
 LONG RunDMATest(volatile struct ncr710 *ncr, UBYTE *src, UBYTE *dst, ULONG size)
 {
 	ULONG *script;
-	ULONG timeout;
-	UBYTE istat;
+	UBYTE istat, dstat;
 
 	// Build the SCRIPTS program
 	script = BuildDMAScript(src, dst, size);
@@ -292,44 +423,52 @@ LONG RunDMATest(volatile struct ncr710 *ncr, UBYTE *src, UBYTE *dst, ULONG size)
 	(void)ncr->dstat;
 	(void)ncr->sstat0;
 
+	// Clear interrupt received flag
+	g_int_state.int_received = 0;
+
 	// Load the script address into DSP to start execution
 	WRITE_LONG(ncr, dsp, (ULONG)script);
 
-	// Wait for completion or timeout
-	for (timeout = 0; timeout < 100000; timeout++) {
-		istat = ncr->istat;
+	// Wait for interrupt (with Ctrl-C break)
+	ULONG sigs = Wait(g_int_state.signal_mask | SIGBREAKF_CTRL_C);
 
-		// Check for DMA interrupt
-		if (istat & ISTATF_DIP) {
-			UBYTE dstat = ncr->dstat;
+	if (sigs & SIGBREAKF_CTRL_C) {
+		dbgprintf("ERROR: Interrupted by user (Ctrl-C)\n");
+		return TEST_FAILED;
+	}
 
-			// Check for script interrupt (our completion signal)
-			if (dstat & DSTATF_SIR) {
-				// Success - script completed
-				if (ncr->dsps == 0xDEADBEEF) {
-					return TEST_SUCCESS;
-				}
-			}
+	if (!g_int_state.int_received) {
+		dbgprintf("ERROR: Spurious signal\n");
+		return TEST_FAILED;
+	}
 
-			// Check for errors
-			if (CheckNCRStatus(ncr, "DMA") < 0) {
-				return TEST_DMA_ERROR;
+	// Check interrupt status from handler
+	istat = g_int_state.istat;
+	dstat = g_int_state.dstat;
+
+	// Check for DMA interrupt
+	if (istat & ISTATF_DIP) {
+
+		// Check for script interrupt (our completion signal)
+		if (dstat & DSTATF_SIR) {
+			// Success - script completed
+			if (g_int_state.dsps == 0xDEADBEEF) {
+				return TEST_SUCCESS;
 			}
 		}
 
-		// Small delay
-		if ((timeout & 0xFF) == 0) {
-			// Every 256 iterations, give other tasks a chance
-			// In a ROM module we can't call Wait(), so just spin
+		// Check for errors
+		if (CheckNCRStatus(ncr, "DMA") < 0) {
+			return TEST_DMA_ERROR;
 		}
 	}
 
-	dbgprintf("ERROR: DMA timeout\n");
-	dbgprintf("  ISTAT: 0x%02lx\n", (ULONG)ncr->istat);
-	dbgprintf("  DSTAT: 0x%02lx\n", (ULONG)ncr->dstat);
-	dbgprintf("  DSP:   0x%08lx\n", ncr->dsp);
+	dbgprintf("ERROR: DMA interrupt but no completion\n");
+	dbgprintf("  ISTAT: 0x%02lx\n", (ULONG)istat);
+	dbgprintf("  DSTAT: 0x%02lx\n", (ULONG)dstat);
+	dbgprintf("  DSPS:  0x%08lx\n", g_int_state.dsps);
 
-	return TEST_TIMEOUT;
+	return TEST_FAILED;
 }
 
 /*
@@ -341,8 +480,7 @@ static LONG RunScatterGatherTest(volatile struct ncr710 *ncr, UBYTE **sources,
                                   UBYTE *dest, ULONG *sizes, ULONG num_segments)
 {
 	ULONG *script;
-	ULONG timeout;
-	UBYTE istat;
+	UBYTE istat, dstat;
 
 	// Build the scatter-gather SCRIPTS program
 	script = BuildScatterGatherScript(sources, dest, sizes, num_segments);
@@ -357,43 +495,52 @@ static LONG RunScatterGatherTest(volatile struct ncr710 *ncr, UBYTE **sources,
 	(void)ncr->dstat;
 	(void)ncr->sstat0;
 
+	// Clear interrupt received flag
+	g_int_state.int_received = 0;
+
 	// Load the script address into DSP to start execution
 	WRITE_LONG(ncr, dsp, (ULONG)script);
 
-	// Wait for completion or timeout
-	for (timeout = 0; timeout < 100000; timeout++) {
-		istat = ncr->istat;
+	// Wait for interrupt (with Ctrl-C break)
+	ULONG sigs = Wait(g_int_state.signal_mask | SIGBREAKF_CTRL_C);
 
-		// Check for DMA interrupt
-		if (istat & ISTATF_DIP) {
-			UBYTE dstat = ncr->dstat;
+	if (sigs & SIGBREAKF_CTRL_C) {
+		dbgprintf("ERROR: Interrupted by user (Ctrl-C)\n");
+		return TEST_FAILED;
+	}
 
-			// Check for script interrupt (our completion signal)
-			if (dstat & DSTATF_SIR) {
-				// Success - script completed
-				if (ncr->dsps == 0xCAFEBABE) {
-					return TEST_SUCCESS;
-				}
-			}
+	if (!g_int_state.int_received) {
+		dbgprintf("ERROR: Spurious signal\n");
+		return TEST_FAILED;
+	}
 
-			// Check for errors
-			if (CheckNCRStatus(ncr, "SG DMA") < 0) {
-				return TEST_DMA_ERROR;
+	// Check interrupt status from handler
+	istat = g_int_state.istat;
+	dstat = g_int_state.dstat;
+
+	// Check for DMA interrupt
+	if (istat & ISTATF_DIP) {
+
+		// Check for script interrupt (our completion signal)
+		if (dstat & DSTATF_SIR) {
+			// Success - script completed
+			if (g_int_state.dsps == 0xCAFEBABE) {
+				return TEST_SUCCESS;
 			}
 		}
 
-		// Small delay
-		if ((timeout & 0xFF) == 0) {
-			// Every 256 iterations, give other tasks a chance
+		// Check for errors
+		if (CheckNCRStatus(ncr, "SG DMA") < 0) {
+			return TEST_DMA_ERROR;
 		}
 	}
 
-	dbgprintf("ERROR: Scatter-gather DMA timeout\n");
-	dbgprintf("  ISTAT: 0x%02lx\n", (ULONG)ncr->istat);
-	dbgprintf("  DSTAT: 0x%02lx\n", (ULONG)ncr->dstat);
-	dbgprintf("  DSP:   0x%08lx\n", ncr->dsp);
+	dbgprintf("ERROR: Scatter-gather DMA interrupt but no completion\n");
+	dbgprintf("  ISTAT: 0x%02lx\n", (ULONG)istat);
+	dbgprintf("  DSTAT: 0x%02lx\n", (ULONG)dstat);
+	dbgprintf("  DSPS:  0x%08lx\n", g_int_state.dsps);
 
-	return TEST_TIMEOUT;
+	return TEST_FAILED;
 }
 
 /*
@@ -833,6 +980,15 @@ void TestMain(void)
 		return;
 	}
 
+	// Setup interrupts
+	if (SetupDMATestInterrupts(ncr) < 0) {
+		dbgprintf("FATAL: Interrupt setup failed\n");
+		return;
+	}
+
 	// Run the tests
 	TestMemoryTypes(ncr);
+
+	// Cleanup interrupts
+	CleanupDMATestInterrupts(ncr);
 }

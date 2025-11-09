@@ -124,10 +124,27 @@ struct InquiryData {
 	UBYTE revision[4];	// Revision
 };
 
+/* Interrupt support */
+#define NCR_INTNUM	3	// INTB_PORTS for A4000T NCR chip
+
+/* Global interrupt state */
+struct NCRIntState {
+	struct Task *task;		// Task to signal
+	ULONG signal_mask;		// Signal bit to send
+	volatile UBYTE istat;		// Saved ISTAT value
+	volatile UBYTE dstat;		// Saved DSTAT value
+	volatile UBYTE sstat0;		// Saved SSTAT0 value
+	volatile ULONG dsps;		// Saved DSPS value
+	volatile LONG int_received;	// Flag: interrupt received
+};
+
 /* Function Prototypes */
+LONG SetupNCRInterrupts(volatile struct ncr710 *ncr);
+void CleanupNCRInterrupts(volatile struct ncr710 *ncr);
 LONG InitNCRForSCSI(volatile struct ncr710 *ncr);
 LONG DoInquiry(volatile struct ncr710 *ncr, UBYTE target_id, struct InquiryData *data);
 void PrintInquiryData(struct InquiryData *data);
 LONG DoRead32MB(volatile struct ncr710 *ncr, UBYTE target_id);
+LONG DoGenerateFile(const char *filename);
 
 #endif /* NCR_SCSI_H */

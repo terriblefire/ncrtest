@@ -122,6 +122,16 @@ struct rw_reg_inst {
 #define DIENF_WTD	(1<<1)
 #define DIENF_IID	(1<<0)
 
+// sien
+#define SIENF_MA	(1<<7)
+#define SIENF_FCMP	(1<<6)
+#define SIENF_STO	(1<<5)
+#define SIENF_SEL	(1<<4)
+#define SIENF_SGE	(1<<3)
+#define SIENF_UDC	(1<<2)
+#define SIENF_RST	(1<<1)
+#define SIENF_PAR	(1<<0)
+
 // dcntl
 #define DCNTLF_CF1	(1<<7)
 #define DCNTLF_CF0	(1<<6)
