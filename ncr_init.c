@@ -13,7 +13,7 @@
  * CIA-based delay function (from ROM code)
  * Delays for approximately the specified number of microseconds
  */
-static void poll_cia(ULONG microseconds)
+void poll_cia(ULONG microseconds)
 {
 	struct CIA *ciaa = (struct CIA *)0xBFE001;
 	volatile UBYTE dummy;

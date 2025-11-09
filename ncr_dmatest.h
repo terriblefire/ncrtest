@@ -215,6 +215,7 @@ extern struct ExecBase *SysBase;
 /* Function prototypes */
 void kprintf(char *,...);
 void dbgprintf(const char *format, ...);
+void poll_cia(ULONG microseconds);
 void TestMain(void);
 LONG DetectNCR(volatile struct ncr710 *ncr);
 LONG InitNCR(volatile struct ncr710 *ncr);

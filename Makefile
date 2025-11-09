@@ -52,15 +52,26 @@ ROM_OBJS = $(ROM_C_OBJS) $(ROM_ASM_OBJS)
 # Output
 TARGET = ncr_dmatest
 ROM_TARGET = ncr_dmatest.resource
+SCSI_TARGET = ncr_scsi
+
+# Source files for SCSI tool
+SCSI_C_SRCS = ncr_scsi_main.c ncr_scsi.c ncr_init.c dprintf.c
+SCSI_C_OBJS = $(SCSI_C_SRCS:.c=.scsi.o)
 
 # Default target - build both
-all: $(TARGET) $(ROM_TARGET)
+all: $(TARGET) $(ROM_TARGET) $(SCSI_TARGET)
 
 # Build just the standard executable (for CI/CD without vbcc)
 $(TARGET): $(C_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(C_OBJS)
 	@echo "Executable built: $(TARGET)"
 	@m68k-amigaos-size $(TARGET)
+
+# Build SCSI tool
+$(SCSI_TARGET): $(SCSI_C_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $(SCSI_C_OBJS)
+	@echo "SCSI tool built: $(SCSI_TARGET)"
+	@m68k-amigaos-size $(SCSI_TARGET)
 
 # Link the ROM module (vbcc)
 $(ROM_TARGET): $(TARGET) $(ROM_OBJS)
@@ -78,6 +89,10 @@ ncr_init.o: ncr_init.c ncr_dmatest.h
 ncr_dmatest.o: ncr_dmatest.c ncr_dmatest.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Compile C files for SCSI tool (with .scsi.o suffix to avoid conflicts)
+%.scsi.o: %.c ncr_scsi.h ncr_dmatest.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # Compile C files for ROM module (vbcc)
 rom_resident.o: rom_resident.c
 	$(VC) $(CFLAGS_ROM) -c $< -o $@
@@ -91,7 +106,7 @@ rom_payload.o: rom_payload.s $(TARGET)
 
 # Clean build artifacts
 clean:
-	rm -f $(C_OBJS) $(ROM_OBJS) $(TARGET) $(ROM_TARGET) *.rom *.asm
+	rm -f $(C_OBJS) $(ROM_OBJS) $(SCSI_C_OBJS) $(TARGET) $(ROM_TARGET) $(SCSI_TARGET) *.rom *.asm
 	@echo "Clean complete"
 
 # ROM building
